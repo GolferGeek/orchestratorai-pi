@@ -822,9 +822,9 @@ final class PiRunner: ObservableObject {
 
     func loadRun(_ record: PiRunRecord, projectDirectory: URL) {
         let directory = projectDirectory.appendingPathComponent(record.relativeDirectory)
-        output = (try? String(contentsOf: directory.appendingPathComponent("final.md"))) ?? ""
-        thinkingOutput = (try? String(contentsOf: directory.appendingPathComponent("thinking.md"))) ?? ""
-        traceOutput = (try? String(contentsOf: directory.appendingPathComponent("trace.md"))) ?? ""
+        output = (try? String(contentsOf: directory.appendingPathComponent("final.md"), encoding: .utf8)) ?? ""
+        thinkingOutput = (try? String(contentsOf: directory.appendingPathComponent("thinking.md"), encoding: .utf8)) ?? ""
+        traceOutput = (try? String(contentsOf: directory.appendingPathComponent("trace.md"), encoding: .utf8)) ?? ""
         workflowTraceLines = traceOutput
             .split(separator: "\n")
             .map(String.init)
