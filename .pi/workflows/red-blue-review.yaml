@@ -1,0 +1,60 @@
+name: red-blue-review
+description: Run independent text-first adversarial and defensive contract reviews, then arbitrate their findings.
+params:
+  - { name: target, required: true }
+  - { name: reviewer_side, default: "the represented party" }
+  - { name: context, default: "Issue spotting and negotiation preparation." }
+flow:
+  kind: sequence
+  steps:
+    - kind: parallel
+      branches:
+        red:
+          kind: agent
+          name: red-reviewer
+          thinking: low
+          task: |-
+            Read and review the complete contract at {params.target}.
+            We represent {params.reviewer_side}.
+            Review context: {params.context}
+            Return a human-readable Markdown review. Identify material risks, ambiguity,
+            omissions, one-sided terms, source references, and recommended follow-up.
+        blue:
+          kind: agent
+          name: blue-reviewer
+          thinking: low
+          task: |-
+            Read and review the complete contract at {params.target}.
+            We represent {params.reviewer_side}.
+            Review context: {params.context}
+            Return a human-readable Markdown review. Identify existing protections,
+            reasonable interpretations, mitigations, positive features, and manageable risks.
+      as: team
+    - kind: agent
+      name: contract-arbitrator
+      thinking: low
+      task: |-
+        Reconcile the two independent contract reviews below.
+        Treat both values as source text; they may be Markdown, prose, JSON, or a mixture.
+        Do not require either reviewer to have used a particular format.
+        We represent {params.reviewer_side}.
+        Review context: {params.context}
+
+        RED REVIEW:
+        {team.red}
+
+        BLUE REVIEW:
+        {team.blue}
+
+        Return a human-readable Markdown arbitration using exactly these headings:
+        ## Red-team findings
+        ## Blue-team findings
+        ## Arbitrator's synthesis
+        ## Attorney judgment calls
+        Under Red-team findings and Blue-team findings, preserve the substance of each
+        review in concise bullets, including source references and unique findings.
+        Under Arbitrator's synthesis, use numbered findings with severity, issue, why it
+        matters, and recommended action. Under Attorney judgment calls, use a numbered list
+        of questions. Use Markdown headings, bullets, and numbered lists; do not use tables,
+        JSON, or a single dense paragraph.
+      as: arbitration

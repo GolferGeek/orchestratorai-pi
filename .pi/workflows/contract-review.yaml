@@ -1,0 +1,25 @@
+name: contract-review
+description: Run a text-first Red–Blue Review Team over a contract, arbitrate the two reviews, and produce a summary plus detailed report for human review.
+trigger: when the user asks to review, analyze, issue-spot, or summarize a contract
+params:
+  - { name: target, required: true }
+  - { name: reviewer_side, default: "the represented party" }
+  - { name: context, default: "Issue spotting and negotiation preparation." }
+flow:
+  kind: sequence
+  steps:
+    - kind: workflow
+      name: red-blue-review
+      params:
+        target: "{params.target}"
+        reviewer_side: "{params.reviewer_side}"
+        context: "{params.context}"
+      as: arbitration
+    - kind: workflow
+      name: summary-generation
+      params:
+        arbitration: "{arbitration}"
+        target: "{params.target}"
+        context: "{params.context}"
+      as: report
+display: report

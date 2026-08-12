@@ -1,0 +1,15 @@
+.pi/sessions/
+.pi/npm/
+.pi/reports/
+.pi/*.local.json
+.build/
+dist/
+data/runs/*
+!data/runs/README.md
+.env
+.env.*
+!.env.example
+fixtures/private/
+matters/**/private/
+matters/**/client-material/
+matters/**/real/

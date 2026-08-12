@@ -1,0 +1,29 @@
+name: summary-generation
+description: Produce an executive summary and detailed Markdown report from arbitrated contract findings.
+params:
+  - { name: arbitration, required: true }
+  - { name: target, required: true }
+  - { name: context, default: "No additional business context supplied." }
+agent: contract-summary-writer
+task: |-
+  Produce the final contract-review package for {params.target}.
+  Review context: {params.context}
+  Arbitrated findings:
+  {params.arbitration}
+
+  Return a complete human-readable Markdown report with these headings in this order:
+  # Contract review — [short document name]
+  ## Executive summary
+  ## Attorney review focus
+  ## Red-team findings
+  ## Blue-team findings
+  ## Arbitrator's synthesis
+  ## Recommended actions
+  ## Open questions for counsel
+  ## Limitations
+  Under Attorney review focus, list every standout issue as an unchecked task item:
+  - [ ] SEVERITY — issue; attorney question or recommended action
+  Preserve distinct Red-team and Blue-team positions from the arbitrated findings instead
+  of collapsing them into a generic summary. Use short paragraphs, bullets, and numbered
+  lists. Do not use Markdown tables, JSON, long unbroken paragraphs, or workflow-status
+  commentary. Cite clause headings, line locations, or short source excerpts when available.

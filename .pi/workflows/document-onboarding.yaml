@@ -1,0 +1,45 @@
+name: document-onboarding
+description: Classify, inventory, check completeness, and issue-spot a document before deeper legal review.
+params:
+  - { name: target, required: true }
+  - { name: context, default: "Prepare this document for legal intake and recommend the next workflow." }
+flow:
+  kind: sequence
+  steps:
+    - kind: parallel
+      branches:
+        classification:
+          kind: agent
+          name: document-classifier
+          task: |-
+            Read the complete document at {params.target}.
+            Intake context: {params.context}
+            Classify it and extract traceable intake metadata, clause topics, and uncertainties.
+        completeness:
+          kind: agent
+          name: document-completeness-checker
+          task: |-
+            Read the complete document at {params.target}.
+            Intake context: {params.context}
+            Check its completeness and identify missing materials, structural blockers, and preliminary issues.
+      as: intake
+    - kind: agent
+      name: document-onboarding-summary-writer
+      task: |-
+        Produce the final onboarding report for {params.target}.
+        Intake context: {params.context}
+
+        The first line of the report must be exactly:
+        # Document onboarding — [short document name]
+        Never call this report a contract review unless the source document itself is a contract
+        and you are only recommending that a later contract-review workflow be run.
+
+        CLASSIFICATION:
+        {intake.classification}
+
+        COMPLETENESS CHECK:
+        {intake.completeness}
+
+        Preserve both perspectives, identify preliminary issues, and recommend whether the document
+        should proceed to contract review or another workflow.
+display: report
