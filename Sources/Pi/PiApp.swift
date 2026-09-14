@@ -26,6 +26,10 @@ struct WorkflowDefinition: Identifiable, Hashable {
     let icon: String
     let description: String
     let fileLabel: String
+    let groupId: String
+    let status: WorkflowInstallStatus
+
+    var isReady: Bool { status == .ready }
 }
 
 @main
@@ -52,16 +56,19 @@ struct ContentView: View {
     @State private var runPendingDeletion: PiRunRecord?
     @State private var showingDeleteConfirmation = false
     @State private var legalWorkflowsExpanded = true
-    @State private var documentProcessingExpanded = true
+    @State private var expandedGroups: Set<String> = Set(LegalWorkflowCatalog.groups.map(\.id))
+    @State private var projectDirectory = ContentView.findProjectDirectory()
 
     private let sides = ["Receiving party", "Disclosing party", "Both parties", "Not specified"]
-    private let workflows = [
-        WorkflowDefinition(id: "contract-review", title: "Review a contract", icon: "checklist", description: "Red/Blue issue spotting, arbitration, and attorney review.", fileLabel: "contract"),
-        WorkflowDefinition(id: "document-onboarding", title: "Onboard a document", icon: "doc.badge.plus", description: "Classify, inventory, check completeness, and find initial issues.", fileLabel: "document")
-    ]
+
+    private var workflows: [WorkflowDefinition] {
+        LegalWorkflowCatalog.workflows(projectDirectory: projectDirectory)
+    }
 
     private var activeWorkflow: WorkflowDefinition {
-        workflows.first(where: { $0.id == selectedWorkflow }) ?? workflows[0]
+        workflows.first(where: { $0.id == selectedWorkflow })
+            ?? workflows.first(where: { $0.id == "contract-review" })
+            ?? workflows[0]
     }
 
     var body: some View {
@@ -74,11 +81,13 @@ struct ContentView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
                         taskCard
-                        contextCard
-                        sourceDocumentCard
-                        attorneyReviewCard
-                        resultCard
-                        humanReviewCard
+                        if activeWorkflow.isReady || !runner.markdownReport.isEmpty {
+                            contextCard
+                            sourceDocumentCard
+                            attorneyReviewCard
+                            resultCard
+                            humanReviewCard
+                        }
                     }
                     .padding(28)
                 }
@@ -86,8 +95,13 @@ struct ContentView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
-            runner.loadRuns(projectDirectory: Self.findProjectDirectory())
-            selectedWorkflow = runner.currentWorkflow
+            projectDirectory = Self.findProjectDirectory()
+            runner.loadRuns(projectDirectory: projectDirectory)
+            if workflows.contains(where: { $0.id == runner.currentWorkflow }) {
+                selectedWorkflow = runner.currentWorkflow
+            } else if let firstReady = workflows.first(where: \.isReady) {
+                selectedWorkflow = firstReady.id
+            }
         }
         .onChange(of: selectedWorkflow) { _, _ in
             if selectedWorkflow != runner.currentWorkflow {
@@ -137,40 +151,64 @@ struct ContentView: View {
                                 .font(.caption.weight(.bold))
                             Label("Legal workflows", systemImage: "doc.text.magnifyingglass")
                                 .font(.headline)
+                            Spacer(minLength: 0)
+                            Text("\(workflows.filter(\.isReady).count)/\(workflows.count) ready")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                     }
                     .buttonStyle(.plain)
 
                     if legalWorkflowsExpanded {
-                        Button {
-                            documentProcessingExpanded.toggle()
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: documentProcessingExpanded ? "chevron.down" : "chevron.right")
-                                    .font(.caption.weight(.bold))
-                                Text("Document processing")
-                                    .font(.subheadline.weight(.semibold))
-                            }
-                            .padding(.leading, 18)
-                        }
-                        .buttonStyle(.plain)
-
-                        if documentProcessingExpanded {
-                            ForEach(workflows) { workflow in
+                        ForEach(LegalWorkflowCatalog.groups) { group in
+                            let items = workflows.filter { $0.groupId == group.id }
+                            if !items.isEmpty {
                                 Button {
-                                    selectedWorkflow = workflow.id
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Label(workflow.title, systemImage: workflow.icon)
-                                        Text(workflow.description)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .padding(.leading, 24)
+                                    if expandedGroups.contains(group.id) {
+                                        expandedGroups.remove(group.id)
+                                    } else {
+                                        expandedGroups.insert(group.id)
                                     }
-                                    .padding(.leading, 36)
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: expandedGroups.contains(group.id) ? "chevron.down" : "chevron.right")
+                                            .font(.caption.weight(.bold))
+                                        Text(group.name)
+                                            .font(.subheadline.weight(.semibold))
+                                    }
+                                    .padding(.leading, 18)
                                 }
                                 .buttonStyle(.plain)
-                                .tag(workflow.id)
+
+                                if expandedGroups.contains(group.id) {
+                                    ForEach(items) { workflow in
+                                        Button {
+                                            selectedWorkflow = workflow.id
+                                        } label: {
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                HStack(spacing: 6) {
+                                                    Label(workflow.title, systemImage: workflow.icon)
+                                                        .font(.callout)
+                                                    Spacer(minLength: 0)
+                                                    Text(workflow.status.label)
+                                                        .font(.caption2.weight(.semibold))
+                                                        .padding(.horizontal, 6)
+                                                        .padding(.vertical, 2)
+                                                        .background(workflow.isReady ? Color.green.opacity(0.18) : Color.secondary.opacity(0.14))
+                                                        .foregroundStyle(workflow.isReady ? Color.green : Color.secondary)
+                                                        .clipShape(Capsule())
+                                                }
+                                                Text(workflow.description)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                                    .padding(.leading, 24)
+                                            }
+                                            .padding(.leading, 36)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .tag(workflow.id)
+                                    }
+                                }
                             }
                         }
                     }
@@ -240,7 +278,7 @@ struct ContentView: View {
         }
         .listStyle(.sidebar)
         .navigationTitle("Workflows")
-        .frame(minWidth: 230)
+        .frame(minWidth: 260)
     }
 
     private func deleteButton(for run: PiRunRecord) -> some View {
@@ -295,10 +333,19 @@ struct ContentView: View {
     private var taskCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 16) {
-                HStack {
+                HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(activeWorkflow.title)
-                            .font(.title3.weight(.semibold))
+                        HStack(spacing: 8) {
+                            Text(activeWorkflow.title)
+                                .font(.title3.weight(.semibold))
+                            Text(activeWorkflow.status.label)
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(activeWorkflow.isReady ? Color.green.opacity(0.18) : Color.secondary.opacity(0.14))
+                                .foregroundStyle(activeWorkflow.isReady ? Color.green : Color.secondary)
+                                .clipShape(Capsule())
+                        }
                         Text(activeWorkflow.description)
                             .foregroundStyle(.secondary)
                     }
@@ -308,38 +355,63 @@ struct ContentView: View {
                         .foregroundStyle(.blue.opacity(0.75))
                 }
 
-                Button {
-                    showingImporter = true
-                } label: {
-                    Label(
-                        selectedFile == nil ? "Choose a \(activeWorkflow.fileLabel)" : "Choose a different \(activeWorkflow.fileLabel)",
-                        systemImage: "folder"
-                    )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.bordered)
-
-                if let selectedFile {
-                    Label(selectedFile.path, systemImage: "doc")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-
-                HStack {
+                if activeWorkflow.isReady {
                     Button {
-                        startReview()
+                        showingImporter = true
                     } label: {
-                        Label(runner.isRunning ? "Working…" : "Start local workflow", systemImage: "play.fill")
+                        Label(
+                            selectedFile == nil ? "Choose a \(activeWorkflow.fileLabel)" : "Choose a different \(activeWorkflow.fileLabel)",
+                            systemImage: "folder"
+                        )
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(selectedFile == nil || runner.isRunning)
+                    .buttonStyle(.bordered)
 
-                    if runner.isRunning {
-                        Button("Stop", role: .destructive) {
-                            runner.stop()
+                    if let selectedFile {
+                        Label(selectedFile.path, systemImage: "doc")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    HStack {
+                        Button {
+                            startReview()
+                        } label: {
+                            Label(runner.isRunning ? "Working…" : "Start local workflow", systemImage: "play.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(selectedFile == nil || runner.isRunning)
+
+                        if runner.isRunning {
+                            Button("Stop", role: .destructive) {
+                                runner.stop()
+                            }
                         }
                     }
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Not installed yet", systemImage: "hourglass")
+                            .font(.subheadline.weight(.semibold))
+                        Text("No `.pi/workflows/\(activeWorkflow.id).yaml` in this project. Phase 1 lists the Legal catalog honestly — this entry uses the shared launch UI once its workflow YAML and agents are added.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Text("Shared launch path is ready; deepening this workflow is Phase 2+.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.secondary.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    Button {
+                        // Intentionally disabled — do not fake a run.
+                    } label: {
+                        Label("Start local workflow", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(true)
                 }
             }
             .padding(8)
@@ -347,39 +419,59 @@ struct ContentView: View {
     }
 
     private var contextCard: some View {
-        GroupBox(activeWorkflow.id == "contract-review" ? "Review context" : "Onboarding context") {
-            VStack(alignment: .leading, spacing: 12) {
-                if activeWorkflow.id == "contract-review" {
-                    HStack {
-                    Text("Our side")
-                        .frame(width: 90, alignment: .leading)
-                    Picker("Our side", selection: $reviewerSide) {
-                        ForEach(sides, id: \.self) { Text($0).tag($0) }
-                    }
-                    .labelsHidden()
-                    }
-                }
+        Group {
+            if activeWorkflow.isReady {
+                GroupBox(contextCardTitle) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if activeWorkflow.id == "contract-review" {
+                            HStack {
+                                Text("Our side")
+                                    .frame(width: 90, alignment: .leading)
+                                Picker("Our side", selection: $reviewerSide) {
+                                    ForEach(sides, id: \.self) { Text($0).tag($0) }
+                                }
+                                .labelsHidden()
+                            }
+                        }
 
-                HStack(alignment: .top) {
-                    Text(activeWorkflow.id == "contract-review" ? "Objective" : "Intake goal")
-                        .frame(width: 90, alignment: .leading)
-                    TextEditor(text: $reviewContext)
-                        .font(.body)
-                        .frame(minHeight: 68)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-                }
+                        HStack(alignment: .top) {
+                            Text(contextObjectiveLabel)
+                                .frame(width: 90, alignment: .leading)
+                            TextEditor(text: $reviewContext)
+                                .font(.body)
+                                .frame(minHeight: 68)
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                        }
 
-                HStack {
-                    Text("Local model")
-                        .frame(width: 90, alignment: .leading)
-                    TextField("Ollama model", text: $model)
-                        .textFieldStyle(.roundedBorder)
-                    Text("Ollama")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        HStack {
+                            Text("Local model")
+                                .frame(width: 90, alignment: .leading)
+                            TextField("Ollama model", text: $model)
+                                .textFieldStyle(.roundedBorder)
+                            Text("Ollama")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(8)
                 }
             }
-            .padding(8)
+        }
+    }
+
+    private var contextCardTitle: String {
+        switch activeWorkflow.id {
+        case "contract-review": return "Review context"
+        case "document-onboarding": return "Onboarding context"
+        default: return "Workflow context"
+        }
+    }
+
+    private var contextObjectiveLabel: String {
+        switch activeWorkflow.id {
+        case "contract-review": return "Objective"
+        case "document-onboarding": return "Intake goal"
+        default: return "Goal"
         }
     }
 
@@ -534,12 +626,18 @@ struct ContentView: View {
     }
 
     private func startReview() {
+        guard activeWorkflow.isReady else {
+            runner.errorMessage = "\(activeWorkflow.title) is not installed yet (no workflow YAML)."
+            return
+        }
         guard let selectedFile else { return }
         let projectDirectory = Self.findProjectDirectory()
+        self.projectDirectory = projectDirectory
         let documentTitle = selectedFile.deletingPathExtension().lastPathComponent
         let runTitle = "\(activeWorkflow.title) — \(documentTitle)"
         let prompt: String
-        if activeWorkflow.id == "contract-review" {
+        switch activeWorkflow.id {
+        case "contract-review":
             prompt = """
             Run the saved contract-review workflow.
 
@@ -549,7 +647,7 @@ struct ContentView: View {
 
             Execute the complete text-first composed workflow: independent Red and Blue contract reviews, arbitration of their natural-language findings, and summary generation. Do not edit the source document. Preserve source references and clearly identify limitations and issues requiring human attorney judgment. Do not launch a retry or an alternate workflow if the composed workflow fails; report the failure instead.
             """
-        } else {
+        case "document-onboarding":
             prompt = """
             Run the saved document-onboarding workflow.
 
@@ -557,6 +655,16 @@ struct ContentView: View {
             Intake goal: \(reviewContext)
 
             Classify and inventory the document, check completeness, identify metadata and initial issues, and recommend the next legal workflow. Do not edit the source document. Return a readable Markdown intake report for human review with source references and explicit uncertainties.
+            """
+        default:
+            // Shared launch path for future Ready workflows: invoke saved YAML by id.
+            prompt = """
+            Run the saved \(activeWorkflow.id) workflow.
+
+            Target document: \(selectedFile.path)
+            Context: \(reviewContext)
+
+            Execute the complete saved workflow. Do not edit the source document. Preserve source references and clearly identify limitations and issues requiring human attorney judgment. Do not launch a retry or an alternate workflow if the composed workflow fails; report the failure instead.
             """
         }
         runner.start(prompt: prompt, projectDirectory: projectDirectory, model: model, runTitle: runTitle, workflow: activeWorkflow.id, sourceDocument: selectedFile.path)
