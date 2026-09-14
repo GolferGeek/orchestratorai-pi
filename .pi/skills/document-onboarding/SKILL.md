@@ -11,12 +11,16 @@ topics, missing components, and issues that should trigger a deeper workflow.
 
 Always report:
 
-- document identity and likely type;
+- document identity and likely type with confidence;
 - parties, roles, dates, and governing-law clues when present;
 - completeness findings, including missing schedules, exhibits, signature blocks, or referenced terms;
-- preliminary legal or operational issues, with short source references;
+- preliminary legal or operational issues, each with severity HIGH / MEDIUM / LOW and a short source reference;
 - uncertainties and questions for the attorney or matter owner;
-- recommended next workflow, such as contract review, privacy review, or manual intake.
+- recommended next workflow, such as contract review, privacy review, or manual intake — name exactly one primary next step.
+
+Attorney review focus items must use:
+
+`- [ ] SEVERITY — issue; question or recommended action`
 
 Do not invent metadata, legal authority, or missing text. Use readable Markdown headings, bullets,
 and numbered lists. This is preliminary issue spotting, not legal advice.

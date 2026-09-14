@@ -1,5 +1,5 @@
 name: red-blue-review
-description: Run independent text-first adversarial and defensive contract reviews, then arbitrate their findings.
+description: Run independent text-first adversarial and defensive contract reviews, then arbitrate their findings into a defensible issue set for counsel.
 params:
   - { name: target, required: true }
   - { name: reviewer_side, default: "the represented party" }
@@ -12,27 +12,44 @@ flow:
         red:
           kind: agent
           name: red-reviewer
-          thinking: low
+          thinking: medium
           task: |-
             Read and review the complete contract at {params.target}.
             We represent {params.reviewer_side}.
             Review context: {params.context}
-            Return a human-readable Markdown review. Identify material risks, ambiguity,
-            omissions, one-sided terms, source references, and recommended follow-up.
+
+            Return human-readable Markdown with:
+            ## Material risks
+            ## Ambiguity and omissions
+            ## One-sided or unusual terms
+            ## Recommended follow-up
+
+            Identify up to five material issues. For each issue state severity (HIGH/MEDIUM/LOW),
+            the provision or source reference, the observation, practical impact on our side,
+            and a concrete follow-up question or negotiation ask. Do not invent facts, law, or clauses.
         blue:
           kind: agent
           name: blue-reviewer
-          thinking: low
+          thinking: medium
           task: |-
             Read and review the complete contract at {params.target}.
             We represent {params.reviewer_side}.
             Review context: {params.context}
-            Return a human-readable Markdown review. Identify existing protections,
-            reasonable interpretations, mitigations, positive features, and manageable risks.
+
+            Return human-readable Markdown with:
+            ## Existing protections
+            ## Reasonable interpretations
+            ## Manageable risks
+            ## Mitigations already available
+
+            Identify up to five material observations. For each, cite the provision or source
+            reference and explain why the risk is protected, limited, or commercially manageable
+            for our side. Do not minimize a genuine material risk merely to balance Red.
+            Do not invent facts, law, or clauses.
       as: team
     - kind: agent
       name: contract-arbitrator
-      thinking: low
+      thinking: medium
       task: |-
         Reconcile the two independent contract reviews below.
         Treat both values as source text; they may be Markdown, prose, JSON, or a mixture.
@@ -51,10 +68,14 @@ flow:
         ## Blue-team findings
         ## Arbitrator's synthesis
         ## Attorney judgment calls
+
         Under Red-team findings and Blue-team findings, preserve the substance of each
         review in concise bullets, including source references and unique findings.
-        Under Arbitrator's synthesis, use numbered findings with severity, issue, why it
-        matters, and recommended action. Under Attorney judgment calls, use a numbered list
-        of questions. Use Markdown headings, bullets, and numbered lists; do not use tables,
-        JSON, or a single dense paragraph.
+        Under Arbitrator's synthesis, use numbered findings ranked by materiality. Each
+        finding must include severity (HIGH/MEDIUM/LOW), issue, why it matters for our side,
+        and recommended action. Keep meaningful disagreement when the text is genuinely
+        ambiguous rather than forcing false consensus.
+        Under Attorney judgment calls, use a numbered list of questions counsel must resolve.
+        Use Markdown headings, bullets, and numbered lists; do not use tables, JSON, or a
+        single dense paragraph.
       as: arbitration

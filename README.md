@@ -40,14 +40,20 @@ workflow and agent nodes from the project-local Pi extension. It shows the
 composition as it executes without exposing hidden model reasoning or full
 intermediate legal findings.
 
-## Legal workflow catalog (Phase 1)
+## Legal workflow catalog (Phase 1–2)
 
 The macOS app sidebar lists Legal’s full 14-workflow catalog under **Legal workflows**, grouped the same way as the product registry (Document Management, Transactional, Litigation, Compliance & Risk, Research & Knowledge).
 
-- **Ready** — `.pi/workflows/{id}.yaml` is present; use the shared launch card (choose a file → context → **Start local workflow**).
+- **Ready** — `.pi/workflows/{id}.yaml` is present; use the shared launch card (demo sample or choose a file → context → **Start local workflow**).
 - **Coming soon** — listed honestly with the shared UI stub; Start is disabled until YAML + agents land.
 
-Currently Ready: `document-onboarding`, `contract-review`. The other twelve share the same launch path once installed.
+Currently Ready: `document-onboarding`, `contract-review` (Phase 2 deepened prompts, fixtures, and shared attorney-review HITL). The other twelve share the same launch path once installed — do not add their YAML until that phase.
+
+### Demo (macOS app)
+
+1. `./scripts/build-app.sh && open dist/Pi.app` (set `PI_PROJECT_PATH` to this repo if the app cannot find `.pi/settings.json`).
+2. **Document Onboarding** → demo sample **Incomplete services draft** → Start → work **Attorney intake focus** → Approve / Request changes.
+3. **Contract Review** → demo sample **Mutual NDA** → Our side **Receiving party** → Start → work **Attorney review focus** (severity badges) → Approve / Request changes.
 
 ## Open Pi
 

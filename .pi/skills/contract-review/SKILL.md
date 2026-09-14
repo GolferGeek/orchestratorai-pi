@@ -28,7 +28,7 @@ If context is missing, proceed with explicit assumptions and list questions rath
 4. Look for undefined terms, internal inconsistencies, silent risk allocation, one-sided provisions, unusual market positions, and missing protections.
 5. Separate document facts, interpretation, risk assessment, and proposed next steps.
 6. Cite section headings or short excerpts so a human can verify every material observation.
-7. Ask a legal-contract-reviewer sub-agent for a second-pass issue spot when sub-agent support is available and the review is substantial.
+7. Rank issues HIGH / MEDIUM / LOW by practical materiality for the represented party.
 
 ## Required report format
 
@@ -41,6 +41,8 @@ State what the document appears to do, the most important issues, and the bigges
 Start with a short, prioritized task list using:
 
 `- [ ] SEVERITY — issue; attorney question or recommended action`
+
+Prefer 4–8 items. Lead with HIGH.
 
 ### Issue list
 

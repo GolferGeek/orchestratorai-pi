@@ -1,9 +1,14 @@
 # Document onboarding fixtures
 
-These files are intentionally small test documents for the `document-onboarding` workflow.
-They are separate from the contract-review matter samples and each tests a different intake path.
+Intentionally varied intake samples for the `document-onboarding` workflow.
+Separate from the richer contract-review matter samples under `matters/contract-review/`.
 
-- `incomplete-services-agreement.md` — missing exhibits, signature block, governing law, and key commercial terms.
-- `conflicting-version-nda.md` — conflicting dates and version references that should be flagged.
-- `routing-memo.md` — a non-contract legal document that should be classified and routed elsewhere.
-- `complete-short-lease.md` — a comparatively complete agreement that should be ready for deeper review.
+| File | What it exercises |
+|------|-------------------|
+| `incomplete-services-agreement.md` | Missing exhibits, TBD brackets, broken cross-refs, no signature / governing law |
+| `conflicting-version-nda.md` | Conflicting dates and version references that should be flagged |
+| `routing-memo.md` | Non-contract legal memo — classify and route elsewhere |
+| `complete-short-lease.md` | Comparatively complete agreement — ready for deeper review (e.g. contract-review) |
+
+**Demo tip:** Start with `incomplete-services-agreement.md` to show blockers + recommended next workflow,
+then `complete-short-lease.md` to show a clean handoff to Contract Review.

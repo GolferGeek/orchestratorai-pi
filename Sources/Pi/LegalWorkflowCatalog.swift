@@ -19,7 +19,7 @@ struct WorkflowGroupDefinition: Identifiable, Hashable {
     let sortOrder: Int
 }
 
-/// Legal's 14-workflow catalog (Phase 1: shared launch UI, honest Ready / Coming soon).
+/// Legal's 14-workflow catalog (Phase 1–2: shared launch UI, honest Ready / Coming soon; DO + CR deepened).
 enum LegalWorkflowCatalog {
     static let groups: [WorkflowGroupDefinition] = [
         WorkflowGroupDefinition(id: "document-management", name: "Document Management", sortOrder: 0),
@@ -32,9 +32,9 @@ enum LegalWorkflowCatalog {
     /// Canonical Legal catalog. Status is resolved against on-disk `.pi/workflows/{id}.yaml`.
     private static let seed: [(id: String, title: String, icon: String, description: String, fileLabel: String, groupId: String)] = [
         ("document-onboarding", "Document Onboarding", "doc.badge.plus",
-         "Classify, inventory, check completeness, and find initial issues.", "document", "document-management"),
+         "Classify, inventory, check completeness, and hand counsel a prioritized intake checklist.", "document", "document-management"),
         ("contract-review", "Contract Review", "checklist",
-         "Red/Blue issue spotting, arbitration, and attorney review.", "contract", "document-management"),
+         "Red/Blue issue spotting, arbitration, and a shared attorney-review checkpoint.", "contract", "document-management"),
         ("due-diligence", "Due Diligence", "magnifyingglass.circle",
          "Comprehensive due diligence analysis across document sets.", "document set", "transactional"),
         ("deal-memo", "Deal Memo", "doc.richtext",

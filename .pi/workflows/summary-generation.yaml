@@ -1,5 +1,5 @@
 name: summary-generation
-description: Produce an executive summary and detailed Markdown report from arbitrated contract findings.
+description: Produce an executive summary and detailed Markdown report from arbitrated contract findings, with a prioritized attorney-review checklist.
 params:
   - { name: arbitration, required: true }
   - { name: target, required: true }
@@ -21,9 +21,12 @@ task: |-
   ## Recommended actions
   ## Open questions for counsel
   ## Limitations
+
   Under Attorney review focus, list every standout issue as an unchecked task item:
   - [ ] SEVERITY — issue; attorney question or recommended action
+  Use SEVERITY in {HIGH, MEDIUM, LOW}. Prefer 4–8 items; lead with HIGH.
   Preserve distinct Red-team and Blue-team positions from the arbitrated findings instead
   of collapsing them into a generic summary. Use short paragraphs, bullets, and numbered
   lists. Do not use Markdown tables, JSON, long unbroken paragraphs, or workflow-status
   commentary. Cite clause headings, line locations, or short source excerpts when available.
+  State clearly that this is issue spotting for counsel, not a legal opinion.

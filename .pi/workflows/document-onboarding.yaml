@@ -1,8 +1,8 @@
 name: document-onboarding
-description: Classify, inventory, check completeness, and issue-spot a document before deeper legal review.
+description: Classify, inventory, check completeness, and issue-spot a document before deeper legal review. Produces an attorney-ready intake report with a prioritized review checklist.
 params:
   - { name: target, required: true }
-  - { name: context, default: "Prepare this document for legal intake and recommend the next workflow." }
+  - { name: context, default: "Prepare this document for legal intake. Flag blockers, missing materials, and the recommended next workflow." }
 flow:
   kind: sequence
   steps:
@@ -14,14 +14,33 @@ flow:
           task: |-
             Read the complete document at {params.target}.
             Intake context: {params.context}
-            Classify it and extract traceable intake metadata, clause topics, and uncertainties.
+
+            Produce a precise intake classification in Markdown covering:
+            1) Likely document type and confidence (high/medium/low) with one-sentence rationale
+            2) Apparent parties and roles (do not invent unnamed parties)
+            3) Dates, term, version/revision clues, and governing-law / venue clues when present
+            4) Referenced exhibits, schedules, addenda, SOWs, or related agreements (attached vs missing)
+            5) Clause / topic inventory with short source references (heading or excerpt)
+            6) Uncertainties and assumptions — label each as Assumption or Unknown
+
+            Cite headings or short excerpts. Do not invent facts, law, or missing text.
+            Do not write the final onboarding report; classification only.
         completeness:
           kind: agent
           name: document-completeness-checker
           task: |-
             Read the complete document at {params.target}.
             Intake context: {params.context}
-            Check its completeness and identify missing materials, structural blockers, and preliminary issues.
+
+            Produce a completeness and preliminary-issue assessment in Markdown covering:
+            1) Components present (signatures, definitions, commercial terms, exhibits, notices, governing law, etc.)
+            2) Referenced but missing materials
+            3) Structural blockers (unsigned draft cues, broken cross-refs, placeholder brackets, conflicting versions)
+            4) Preliminary issues a lawyer should verify before deeper review — each with severity HIGH/MEDIUM/LOW and a source reference
+            5) Readiness: Ready for deeper review / Needs materials / Route elsewhere — with one sentence why
+
+            Separate confirmed observations from questions. Do not invent missing text.
+            Do not write the final onboarding report; completeness only.
       as: intake
     - kind: agent
       name: document-onboarding-summary-writer
@@ -40,6 +59,12 @@ flow:
         COMPLETENESS CHECK:
         {intake.completeness}
 
-        Preserve both perspectives, identify preliminary issues, and recommend whether the document
-        should proceed to contract review or another workflow.
+        Merge both perspectives into one attorney-ready intake package.
+        Under ## Attorney review focus, list every standout intake issue as unchecked tasks:
+        - [ ] SEVERITY — issue; question or recommended action
+        Use SEVERITY in {HIGH, MEDIUM, LOW}. Prefer 3–7 items; lead with blockers.
+        Under ## Recommended next workflow, name exactly one primary next step
+        (e.g. contract-review, manual intake, privacy review, no further automated workflow)
+        and one sentence of rationale. Preserve source references and distinguish facts,
+        assumptions, and uncertainties.
 display: report

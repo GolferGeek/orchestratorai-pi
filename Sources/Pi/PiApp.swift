@@ -18,6 +18,9 @@ struct PiRunRecord: Codable, Hashable, Identifiable {
 struct AttorneyReviewItem: Identifiable, Hashable {
     let id: String
     let text: String
+    let severity: String?
+
+    var displayText: String { text }
 }
 
 struct WorkflowDefinition: Identifiable, Hashable {
@@ -53,6 +56,7 @@ struct ContentView: View {
     @State private var selectedWorkflow = "contract-review"
     @State private var showingActivity = false
     @State private var reviewedIssueIDs: Set<String> = []
+    @State private var reviewDecisionComment = ""
     @State private var runPendingDeletion: PiRunRecord?
     @State private var showingDeleteConfirmation = false
     @State private var legalWorkflowsExpanded = true
@@ -103,7 +107,13 @@ struct ContentView: View {
                 selectedWorkflow = firstReady.id
             }
         }
-        .onChange(of: selectedWorkflow) { _, _ in
+        .onChange(of: selectedWorkflow) { _, newValue in
+            reviewedIssueIDs = []
+            reviewDecisionComment = ""
+            reviewContext = Self.defaultContext(for: newValue)
+            if newValue == "contract-review" && !sides.contains(reviewerSide) {
+                reviewerSide = "Receiving party"
+            }
             if selectedWorkflow != runner.currentWorkflow {
                 selectedFile = nil
                 runner.clearDisplayedRun()
@@ -296,6 +306,8 @@ struct ContentView: View {
 
     private func openRun(_ run: PiRunRecord) {
         selectedWorkflow = run.workflow
+        reviewedIssueIDs = []
+        reviewDecisionComment = ""
         runner.loadRun(run, projectDirectory: Self.findProjectDirectory())
     }
 
@@ -374,6 +386,43 @@ struct ContentView: View {
                             .lineLimit(2)
                     }
 
+                    if !sampleDocuments(for: activeWorkflow.id).isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Demo samples")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            // Keep sample picks on the shared launch card — not a per-workflow screen.
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(sampleDocuments(for: activeWorkflow.id)) { sample in
+                                    let url = projectDirectory.appendingPathComponent(sample.relativePath)
+                                    let exists = FileManager.default.fileExists(atPath: url.path)
+                                    Button {
+                                        guard exists else {
+                                            runner.errorMessage = "Demo sample missing: \(sample.relativePath)"
+                                            return
+                                        }
+                                        selectedFile = url
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: selectedFile?.path == url.path ? "checkmark.circle.fill" : "doc.text")
+                                            Text(sample.title)
+                                            Spacer(minLength: 0)
+                                            if !exists {
+                                                Text("missing")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.red)
+                                            }
+                                        }
+                                        .font(.caption)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(!exists)
+                                }
+                            }
+                        }
+                    }
+
                     HStack {
                         Button {
                             startReview()
@@ -393,10 +442,10 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Not installed yet", systemImage: "hourglass")
                             .font(.subheadline.weight(.semibold))
-                        Text("No `.pi/workflows/\(activeWorkflow.id).yaml` in this project. Phase 1 lists the Legal catalog honestly — this entry uses the shared launch UI once its workflow YAML and agents are added.")
+                        Text("No `.pi/workflows/\(activeWorkflow.id).yaml` in this project. The Legal catalog lists every offering honestly — this entry uses the shared launch UI once its workflow YAML and agents are added.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
-                        Text("Shared launch path is ready; deepening this workflow is Phase 2+.")
+                        Text("Document Onboarding and Contract Review are Ready. Remaining workflows share this same launch path when installed.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
@@ -491,17 +540,36 @@ struct ContentView: View {
                     .disabled(runner.markdownReport.isEmpty || runner.isRunning)
                 }
 
-                if runner.markdownReport.isEmpty {
+                if runner.workflowFailed && runner.finalMarkdown.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "xmark.octagon")
+                            .font(.largeTitle)
+                            .foregroundStyle(.red)
+                        Text("Workflow failed")
+                            .font(.headline)
+                        Text(runner.failureMessage ?? "The local workflow stopped without a final report. Check Activity for the failing step, fix the input or model, and re-run. No alternate workflow was launched.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 220)
+                    .padding(.horizontal, 12)
+                } else if runner.markdownReport.isEmpty {
                     VStack(spacing: 10) {
                         Image(systemName: "doc.text.magnifyingglass")
                             .font(.largeTitle)
                             .foregroundStyle(.secondary)
-                        Text("No review yet")
+                        Text(activeWorkflow.isReady ? "No report yet" : "Workflow not installed")
                             .font(.headline)
-                        Text("Choose a \(activeWorkflow.fileLabel) and start the local workflow.")
+                        Text(activeWorkflow.isReady
+                             ? "Choose a \(activeWorkflow.fileLabel) (or a demo sample), set context, and start the local workflow. Results and the attorney checklist appear here."
+                             : "This catalog entry is Coming soon — Start stays disabled until its YAML is installed.")
+                            .font(.callout)
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity, minHeight: 220)
+                    .padding(.horizontal, 12)
                 } else {
                     ScrollView {
                         reportContent
@@ -521,24 +589,50 @@ struct ContentView: View {
 
     private var attorneyReviewCard: some View {
         let items = runner.attorneyReviewItems
+        let reviewedCount = reviewedIssueIDs.intersection(Set(items.map(\.id))).count
         return GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Label("Attorney review focus", systemImage: "exclamationmark.bubble")
+                HStack(alignment: .firstTextBaseline) {
+                    Label(attorneyFocusTitle, systemImage: "exclamationmark.bubble")
                         .font(.headline)
                     Spacer()
                     if !items.isEmpty {
-                        Text("\(reviewedIssueIDs.intersection(Set(items.map(\.id))).count)/\(items.count) reviewed")
+                        Text("\(reviewedCount)/\(items.count) marked reviewed")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                if items.isEmpty {
-                    Text("The completed report will identify standout issues and questions here.")
+                Text(attorneyFocusSubtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if runner.isRunning {
+                    Label("Workflow running — checklist appears when the report is ready.", systemImage: "hourglass")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else if runner.workflowFailed {
+                    Label("No checklist — the workflow failed before a report was produced.", systemImage: "xmark.octagon")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else if runner.finalMarkdown.isEmpty {
+                    Text("After you run a Ready workflow, prioritized issues for counsel appear here as a shared checklist (same HITL path for every workflow).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else if items.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Report has no attorney-review checklist", systemImage: "questionmark.circle")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                        Text("Expected unchecked items under “Attorney review focus” (`- [ ] SEVERITY — issue; action`). Open the final report below, or re-run if the model omitted the section.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
+                    if !items.isEmpty {
+                        ProgressView(value: Double(reviewedCount), total: Double(max(items.count, 1)))
+                            .tint(reviewedCount == items.count ? .green : .orange)
+                    }
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(items) { item in
                             Button {
@@ -551,10 +645,20 @@ struct ContentView: View {
                                 HStack(alignment: .top, spacing: 8) {
                                     Image(systemName: reviewedIssueIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
                                         .foregroundStyle(reviewedIssueIDs.contains(item.id) ? .green : .orange)
-                                    Text(item.text)
+                                    if let severity = item.severity {
+                                        Text(severity)
+                                            .font(.caption2.weight(.bold))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(severityTint(severity).opacity(0.18))
+                                            .foregroundStyle(severityTint(severity))
+                                            .clipShape(Capsule())
+                                    }
+                                    Text(item.displayText)
                                         .font(.callout)
                                         .foregroundStyle(.primary)
                                         .multilineTextAlignment(.leading)
+                                        .strikethrough(reviewedIssueIDs.contains(item.id), color: .secondary)
                                 }
                             }
                             .buttonStyle(.plain)
@@ -566,32 +670,132 @@ struct ContentView: View {
         }
     }
 
-    private var humanReviewCard: some View {
-        guard runner.currentStatus == "awaiting_human_review" || runner.currentStatus == "revision_requested" else {
-            return AnyView(EmptyView())
+    private var attorneyFocusTitle: String {
+        switch activeWorkflow.id {
+        case "document-onboarding": return "Attorney intake focus"
+        case "contract-review": return "Attorney review focus"
+        default: return "Attorney review focus"
         }
-        return AnyView(
-            GroupBox {
-                VStack(alignment: .leading, spacing: 10) {
-                    Label("Attorney review required", systemImage: "person.badge.key")
-                        .font(.headline)
-                    Text("Review the report above and record a decision before this run is marked complete.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        Button("Approve review") {
-                            runner.approveCurrentRun()
+    }
+
+    private var attorneyFocusSubtitle: String {
+        switch activeWorkflow.id {
+        case "document-onboarding":
+            return "Mark each intake blocker or question as you verify it. Decisions are recorded on the shared attorney-review checkpoint."
+        case "contract-review":
+            return "Work the Red/Blue standout issues before approving. Same shared HITL checkpoint as other Ready workflows."
+        default:
+            return "Prioritized questions for counsel. Same shared human-review checkpoint for every Ready workflow."
+        }
+    }
+
+    private func severityTint(_ severity: String) -> Color {
+        switch severity.uppercased() {
+        case "HIGH", "CRITICAL": return .red
+        case "MEDIUM": return .orange
+        case "LOW": return .blue
+        default: return .secondary
+        }
+    }
+
+    private var humanReviewCard: some View {
+        let awaiting = runner.currentStatus == "awaiting_human_review" || runner.currentStatus == "revision_requested"
+        let items = runner.attorneyReviewItems
+        let reviewedCount = reviewedIssueIDs.intersection(Set(items.map(\.id))).count
+        let allReviewed = items.isEmpty || reviewedCount == items.count
+
+        return Group {
+            if awaiting {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Label(
+                                runner.currentStatus == "revision_requested"
+                                    ? "Changes requested — re-review when ready"
+                                    : "Attorney review required",
+                                systemImage: "person.badge.key"
+                            )
+                            .font(.headline)
+                            Spacer()
+                            Text(runner.currentStatus == "revision_requested" ? "Revision" : "HITL checkpoint")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Color.orange.opacity(0.18))
+                                .foregroundStyle(.orange)
+                                .clipShape(Capsule())
                         }
-                        .buttonStyle(.borderedProminent)
-                        Button("Request changes") {
-                            runner.requestChangesForCurrentRun()
+
+                        Text(humanReviewBlurb)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+
+                        if !items.isEmpty {
+                            HStack(spacing: 8) {
+                                Image(systemName: allReviewed ? "checkmark.seal.fill" : "circle.dashed")
+                                    .foregroundStyle(allReviewed ? .green : .orange)
+                                Text(allReviewed
+                                     ? "All \(items.count) focus items marked reviewed."
+                                     : "\(reviewedCount) of \(items.count) focus items marked reviewed — finish the checklist above before approving when possible.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text("No checklist items were parsed from the report. You can still approve or request changes after reading the full report.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.bordered)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Decision note (saved to checkpoint)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            TextField(
+                                runner.currentStatus == "revision_requested"
+                                    ? "What still needs attention…"
+                                    : "Optional note for the matter file…",
+                                text: $reviewDecisionComment
+                            )
+                            .textFieldStyle(.roundedBorder)
+                        }
+
+                        HStack {
+                            Button("Approve review") {
+                                runner.approveCurrentRun(comment: reviewDecisionComment)
+                                reviewDecisionComment = ""
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(runner.isRunning)
+
+                            Button("Request changes") {
+                                runner.requestChangesForCurrentRun(comment: reviewDecisionComment)
+                                reviewDecisionComment = ""
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(runner.isRunning)
+                        }
+
+                        if !allReviewed && !items.isEmpty {
+                            Text("Approve stays available so demos are not blocked — the progress cue above is guidance, not a hard gate.")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
+                    .padding(8)
                 }
-                .padding(8)
             }
-        )
+        }
+    }
+
+    private var humanReviewBlurb: String {
+        switch activeWorkflow.id {
+        case "document-onboarding":
+            return "Confirm intake findings, missing materials, and the recommended next workflow. Recording Approve or Request changes writes the shared attorney-review checkpoint for this run."
+        case "contract-review":
+            return "Confirm Red/Blue findings and judgment calls in the report. Recording Approve or Request changes completes the shared attorney-review checkpoint — not a legal opinion."
+        default:
+            return "Review the report above and record a decision before this run is marked complete."
+        }
     }
 
     private var sourceDocumentCard: some View {
@@ -610,7 +814,9 @@ struct ContentView: View {
                     .background(Color(nsColor: .textBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else {
-                    Text("Choose a readable text or Markdown contract to preview it here.")
+                    Text(selectedFile == nil
+                         ? "Choose a readable text or Markdown \(activeWorkflow.fileLabel) to preview it here."
+                         : "This file could not be previewed as UTF-8 text (binary/PDF previews are not shown). The workflow can still use the path if the runtime supports it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -645,7 +851,7 @@ struct ContentView: View {
             Reviewer side: \(reviewerSide)
             Review context: \(reviewContext)
 
-            Execute the complete text-first composed workflow: independent Red and Blue contract reviews, arbitration of their natural-language findings, and summary generation. Do not edit the source document. Preserve source references and clearly identify limitations and issues requiring human attorney judgment. Do not launch a retry or an alternate workflow if the composed workflow fails; report the failure instead.
+            Execute the complete text-first composed workflow: independent Red and Blue contract reviews, arbitration of their natural-language findings, and summary generation. Do not edit the source document. Preserve source references. Use severity HIGH/MEDIUM/LOW. Include an ## Attorney review focus section with unchecked tasks (`- [ ] SEVERITY — issue; action`). Clearly identify limitations and issues requiring human attorney judgment. This is issue spotting, not a legal opinion. Do not launch a retry or an alternate workflow if the composed workflow fails; report the failure instead.
             """
         case "document-onboarding":
             prompt = """
@@ -654,7 +860,7 @@ struct ContentView: View {
             Target document: \(selectedFile.path)
             Intake goal: \(reviewContext)
 
-            Classify and inventory the document, check completeness, identify metadata and initial issues, and recommend the next legal workflow. Do not edit the source document. Return a readable Markdown intake report for human review with source references and explicit uncertainties.
+            Classify and inventory the document, check completeness, identify metadata and initial issues, and recommend exactly one next legal workflow. Do not edit the source document. Return a readable Markdown intake report titled "# Document onboarding — …" with an ## Attorney review focus checklist using `- [ ] SEVERITY — issue; action`, source references, and explicit uncertainties. Do not relabel the report as a contract review.
             """
         default:
             // Shared launch path for future Ready workflows: invoke saved YAML by id.
@@ -744,6 +950,43 @@ struct ContentView: View {
         }
     }
 
+    private struct DemoSample: Identifiable {
+        let id: String
+        let title: String
+        let relativePath: String
+    }
+
+    private func sampleDocuments(for workflowId: String) -> [DemoSample] {
+        switch workflowId {
+        case "document-onboarding":
+            return [
+                DemoSample(id: "do-incomplete", title: "Incomplete services draft", relativePath: "fixtures/onboarding/incomplete-services-agreement.md"),
+                DemoSample(id: "do-lease", title: "Complete short lease", relativePath: "fixtures/onboarding/complete-short-lease.md"),
+                DemoSample(id: "do-memo", title: "Routing memo", relativePath: "fixtures/onboarding/routing-memo.md"),
+                DemoSample(id: "do-conflict", title: "Conflicting NDA versions", relativePath: "fixtures/onboarding/conflicting-version-nda.md"),
+            ]
+        case "contract-review":
+            return [
+                DemoSample(id: "cr-nda", title: "Mutual NDA", relativePath: "matters/contract-review/nda/example-mutual-nda.md"),
+                DemoSample(id: "cr-services", title: "Services agreement", relativePath: "matters/contract-review/services-agreement/example-services-agreement.md"),
+                DemoSample(id: "cr-fixture", title: "Fixture NDA", relativePath: "fixtures/example-nda.md"),
+            ]
+        default:
+            return []
+        }
+    }
+
+    private static func defaultContext(for workflowId: String) -> String {
+        switch workflowId {
+        case "document-onboarding":
+            return "Prepare this document for legal intake. Flag blockers, missing materials, and recommend the next workflow."
+        case "contract-review":
+            return "Issue spotting and negotiation preparation. Identify assumptions and questions for attorney review."
+        default:
+            return "Identify assumptions and questions for attorney review."
+        }
+    }
+
     private static func findProjectDirectory() -> URL {
         let fileManager = FileManager.default
         let candidates = [
@@ -819,7 +1062,7 @@ final class PiRunner: ObservableObject {
         var items: [AttorneyReviewItem] = []
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.range(of: "^#{1,6}\\s+Attorney review focus", options: [.regularExpression, .caseInsensitive]) != nil ||
+            if trimmed.range(of: "^#{1,6}\\s+Attorney (review|intake) focus", options: [.regularExpression, .caseInsensitive]) != nil ||
                 trimmed.range(of: "^#{1,6}\\s+Issues requiring attorney review", options: [.regularExpression, .caseInsensitive]) != nil {
                 inQueue = true
                 continue
@@ -828,9 +1071,32 @@ final class PiRunner: ObservableObject {
             guard inQueue, trimmed.hasPrefix("- [") else { continue }
             let value = trimmed.replacingOccurrences(of: "^- \\[.\\]\\s*", with: "", options: .regularExpression)
             guard !value.isEmpty else { continue }
-            items.append(AttorneyReviewItem(id: "issue-\(items.count)-\(value)", text: value))
+            let severity = Self.parseSeverity(from: value)
+            let display = Self.stripSeverityPrefix(from: value)
+            items.append(AttorneyReviewItem(id: "issue-\(items.count)-\(display)", text: display, severity: severity))
         }
         return items
+    }
+
+    private static func parseSeverity(from text: String) -> String? {
+        let pattern = #"^(CRITICAL|HIGH|MEDIUM|LOW|INFO)\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range),
+              let swiftRange = Range(match.range(at: 1), in: text) else { return nil }
+        return String(text[swiftRange]).uppercased()
+    }
+
+    private static func stripSeverityPrefix(from text: String) -> String {
+        var result = text
+        if let severity = parseSeverity(from: text) {
+            result = String(result.dropFirst(severity.count))
+        }
+        result = result.trimmingCharacters(in: .whitespaces)
+        if result.hasPrefix("—") || result.hasPrefix("-") || result.hasPrefix(":") {
+            result = String(result.dropFirst()).trimmingCharacters(in: .whitespaces)
+        }
+        return result.isEmpty ? text : result
     }
 
     var activitySummary: String {
@@ -1190,7 +1456,7 @@ final class PiRunner: ObservableObject {
                let runStatus = event["status"] as? String,
                runStatus != "completed" {
                 workflowFailed = true
-                failureMessage = (event["error"] as? String) ?? (event["message"] as? String) ?? "The contract-review workflow failed."
+                failureMessage = (event["error"] as? String) ?? (event["message"] as? String) ?? "The workflow failed."
                 isRunning = false
                 status = "Workflow failed"
                 persistCurrentRun(status: "failed")
@@ -1251,12 +1517,16 @@ final class PiRunner: ObservableObject {
         try encoder.encode(record).write(to: directory.appendingPathComponent("manifest.json"), options: .atomic)
     }
 
-    func approveCurrentRun() {
-        transitionCurrentRun(to: "completed", checkpointStatus: "approved", comment: "Approved by human reviewer.")
+    func approveCurrentRun(comment: String = "") {
+        let note = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let full = note.isEmpty ? "Approved by human reviewer." : "Approved by human reviewer. \(note)"
+        transitionCurrentRun(to: "completed", checkpointStatus: "approved", comment: full)
     }
 
-    func requestChangesForCurrentRun() {
-        transitionCurrentRun(to: "revision_requested", checkpointStatus: "changes_requested", comment: "Changes requested by human reviewer.")
+    func requestChangesForCurrentRun(comment: String = "") {
+        let note = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let full = note.isEmpty ? "Changes requested by human reviewer." : "Changes requested by human reviewer. \(note)"
+        transitionCurrentRun(to: "revision_requested", checkpointStatus: "changes_requested", comment: full)
     }
 
     private func transitionCurrentRun(to status: String, checkpointStatus: String, comment: String) {
@@ -1280,12 +1550,14 @@ final class PiRunner: ObservableObject {
         let checkpoints = directory.appendingPathComponent("checkpoints")
         try FileManager.default.createDirectory(at: checkpoints, withIntermediateDirectories: true)
         let timestamp = ISO8601DateFormatter().string(from: Date())
+        let workflowId = currentRun?.workflow ?? currentWorkflow
+        let escaped = comment.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\"", with: "'")
         let yaml = """
         status: \(status)
         type: attorney_review
-        workflow: contract-review
+        workflow: \(workflowId)
         updated_at: \(timestamp)
-        comment: \(comment)
+        comment: "\(escaped)"
         """
         try yaml.write(to: checkpoints.appendingPathComponent("01-attorney-review.yaml"), atomically: true, encoding: .utf8)
     }

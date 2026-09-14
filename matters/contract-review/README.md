@@ -1,16 +1,16 @@
-# Contract Review
+# Contract review matter samples
 
-This is the first Pi matter/workstream. It is a small synthetic corpus for exercising the contract-review skill against different agreement types.
+Synthetic agreements for local Contract Review demos. No client data.
 
-Each contract type has its own folder so future reviews can retain source documents, context notes, reports, and attorney decisions together without mixing unrelated agreements.
+| Sample | Path | Demo notes |
+|--------|------|------------|
+| Mutual NDA | `nda/example-mutual-nda.md` | **Primary demo** — residuals clause, $500 liability cap, broad CI definition, Delaware venue |
+| Services agreement | `services-agreement/example-services-agreement.md` | Suspension for nonpay, silent Provider IP indemnity, internal-use license |
+| IP license | `ip-license/example-ip-license.md` | Narrow grant; many silent commercial terms |
+| Employment | `employment-agreement/example-employment-agreement.md` | Short smoke sample |
+| Vendor | `vendor-agreement/example-vendor-agreement.md` | Short smoke sample |
 
-## Contract types
+A copy of the enriched NDA also lives at `fixtures/example-nda.md` for CLI / README flows.
 
-- `nda/` — confidentiality and information-sharing agreements
-- `services-agreement/` — professional services and master services agreements
-- `employment-agreement/` — employment and executive agreements
-- `vendor-agreement/` — purchasing, vendor, and supplier agreements
-- `ip-license/` — intellectual-property license agreements
-
-The folders currently contain synthetic starter documents only. Real documents should be placed in an ignored private subdirectory.
-
+**Demo tip (macOS app):** Contract Review → sample **Mutual NDA** → Our side **Receiving party** → Start →
+work the Attorney review focus checklist → Approve or Request changes.
