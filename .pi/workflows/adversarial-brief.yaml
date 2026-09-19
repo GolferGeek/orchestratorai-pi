@@ -1,0 +1,367 @@
+name: adversarial-brief
+description: Stress-test a brief or motion. A Blue Team defends it while a Red Team attacks it, a judge scores each exchange until the debate converges, counsel accepts fortification recommendations at an attorney gate, and the brief is revised accordingly.
+trigger: when the user asks to stress-test, red-team, or pressure-test a brief, motion, or legal memo
+params:
+  - { name: target, required: true, description: "Path to the brief, motion, or memo" }
+  - { name: context, default: "Stress-test this brief before filing. Identify the attacks most likely to succeed and how to fortify against them.", description: Objective }
+  - { name: severity_threshold, default: "7", description: "Debate continues while any attack scores at or above this severity (1-10)" }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: brief-analyst → round 1 { Blue ×3 ∥ → Red ×3 ∥ → judge } → switch(converged? skip : round 2)
+  → synthesizer → attorney gate (accept recommendations by number) → fortifier → report.
+  Ported from orchestratorai-local `legal/workflows/adversarial-brief` (LangGraph) to pi-agents.
+
+  ```orchestrator-launch
+  title: Brief Stress Test
+  icon: flame
+  group: litigation
+  file: { label: brief, param: target }
+  fields:
+    - { param: context, label: Objective, kind: text }
+    - { param: severity_threshold, label: Severity bar, kind: choice, options: ["5", "6", "7", "8", "9"] }
+  samples:
+    - { title: Motion to dismiss (synthetic), path: fixtures/litigation/motion-to-dismiss.md }
+  review:
+    focusTitle: Attorney review focus
+    focusSubtitle: Work the ranked attacks and weak citations before approving. Fortified text is a draft, not filing-ready.
+    blurb: Confirm the stress-test findings and the fortification draft. Recording Approve or Request changes completes the attorney-review checkpoint — not a legal opinion.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: brief-analyst
+      label: brief-analyst
+      task: |-
+        Read and parse the complete brief at {params.target}.
+        Objective: {params.context}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: structure
+
+    - kind: sequence
+      label: round-1
+      steps:
+        - kind: parallel
+          label: blue-team
+          onError: collect
+          branches:
+            argument:
+              kind: agent
+              profile: brief-argument-defender
+              label: argument-defender
+              task: |-
+                Brief: {params.target} (read it if you need the full text). Debate round 1.
+                This is the first round: defend every element.
+                BRIEF STRUCTURE:
+                {structure}
+
+                Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            authority:
+              kind: agent
+              profile: brief-authority-defender
+              label: authority-defender
+              task: |-
+                Brief: {params.target} (read it if you need the full text). Debate round 1.
+                This is the first round: defend every element.
+                BRIEF STRUCTURE:
+                {structure}
+
+                Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            facts:
+              kind: agent
+              profile: brief-facts-defender
+              label: facts-defender
+              task: |-
+                Brief: {params.target} (read it if you need the full text). Debate round 1.
+                This is the first round: defend every element.
+                BRIEF STRUCTURE:
+                {structure}
+
+                Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+          as: blue
+        - kind: parallel
+          label: red-team
+          onError: collect
+          branches:
+            argument:
+              kind: agent
+              profile: brief-counter-argument
+              label: counter-argument
+              task: |-
+                Brief: {params.target}. Debate round 1.
+
+                BRIEF STRUCTURE:
+                {structure}
+
+                BLUE TEAM DEFENSES THIS ROUND:
+                {blue.argument}
+
+                Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            citations:
+              kind: agent
+              profile: brief-distinguishing-cases
+              label: distinguishing-cases
+              task: |-
+                Brief: {params.target}. Debate round 1.
+
+                BRIEF STRUCTURE:
+                {structure}
+
+                BLUE TEAM DEFENSES THIS ROUND:
+                {blue.authority}
+
+                Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            facts:
+              kind: agent
+              profile: brief-factual-challenge
+              label: factual-challenge
+              task: |-
+                Brief: {params.target}. Debate round 1.
+
+                BRIEF STRUCTURE:
+                {structure}
+
+                BLUE TEAM DEFENSES THIS ROUND:
+                {blue.facts}
+
+                Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+          as: red
+        - kind: agent
+          profile: brief-judge
+          label: judge
+          task: |-
+            Score debate round 1 only. Convergence rule: converged is true when NO exchange has
+            overallSeverity at or above {params.severity_threshold}.
+
+            DEFENDING POSITION (Blue Team, defends the brief):
+            {blue}
+
+            ATTACKING POSITION (Red Team, attacks the brief):
+            {red}
+
+            Return JSON with: converged (boolean), highestSeverity (number, the maximum overallSeverity this
+            round), and record (Markdown for this round only: "## Round 1", one bullet per exchange giving
+            the ARG/CITE/FACT id, Blue scores, Red scores, overallSeverity, and a one-sentence assessment,
+            then a one-paragraph round summary). Keep it concise.
+
+            Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+          json:
+            type: object
+            required: [converged, highestSeverity, record]
+            properties:
+              converged: { type: boolean }
+              highestSeverity: { type: number }
+              record: { type: string, minLength: 1 }
+            additionalProperties: false
+      as: round1
+
+    - kind: switch
+      label: round-2
+      on: "{round1}"
+      cases:
+        - when: { eq: [converged, true] }
+          then:
+            kind: value
+            value: { converged: true, highestSeverity: "{round1.highestSeverity}", record: "Converged after round 1; no second round was needed." }
+      else:
+        kind: sequence
+        steps:
+          - kind: parallel
+            label: blue-team
+            onError: collect
+            branches:
+              argument:
+                kind: agent
+                profile: brief-argument-defender
+                label: argument-defender
+                task: |-
+                  Brief: {params.target} (read it if you need the full text). Debate round 2.
+                  Round-1 judge record (answer the attacks it scored highest): {round1.record}
+                  BRIEF STRUCTURE:
+                  {structure}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+              authority:
+                kind: agent
+                profile: brief-authority-defender
+                label: authority-defender
+                task: |-
+                  Brief: {params.target} (read it if you need the full text). Debate round 2.
+                  Round-1 judge record (answer the attacks it scored highest): {round1.record}
+                  BRIEF STRUCTURE:
+                  {structure}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+              facts:
+                kind: agent
+                profile: brief-facts-defender
+                label: facts-defender
+                task: |-
+                  Brief: {params.target} (read it if you need the full text). Debate round 2.
+                  Round-1 judge record (answer the attacks it scored highest): {round1.record}
+                  BRIEF STRUCTURE:
+                  {structure}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            as: blue
+          - kind: parallel
+            label: red-team
+            onError: collect
+            branches:
+              argument:
+                kind: agent
+                profile: brief-counter-argument
+                label: counter-argument
+                task: |-
+                  Brief: {params.target}. Debate round 2.
+
+                  BRIEF STRUCTURE:
+                  {structure}
+
+                  BLUE TEAM DEFENSES THIS ROUND:
+                  {blue.argument}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+              citations:
+                kind: agent
+                profile: brief-distinguishing-cases
+                label: distinguishing-cases
+                task: |-
+                  Brief: {params.target}. Debate round 2.
+
+                  BRIEF STRUCTURE:
+                  {structure}
+
+                  BLUE TEAM DEFENSES THIS ROUND:
+                  {blue.authority}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+              facts:
+                kind: agent
+                profile: brief-factual-challenge
+                label: factual-challenge
+                task: |-
+                  Brief: {params.target}. Debate round 2.
+
+                  BRIEF STRUCTURE:
+                  {structure}
+
+                  BLUE TEAM DEFENSES THIS ROUND:
+                  {blue.facts}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            as: red
+          - kind: agent
+            profile: brief-judge
+            label: judge
+            task: |-
+              Score debate round 2 only. Convergence rule: converged is true when NO exchange has
+              overallSeverity at or above {params.severity_threshold}.
+
+              DEFENDING POSITION (Blue Team, defends the brief):
+              {blue}
+
+              ATTACKING POSITION (Red Team, attacks the brief):
+              {red}
+
+              Return JSON with: converged (boolean), highestSeverity (number, the maximum overallSeverity this
+              round), and record (Markdown for this round only: "## Round 2", one bullet per exchange giving
+              the ARG/CITE/FACT id, Blue scores, Red scores, overallSeverity, and a one-sentence assessment,
+              then a one-paragraph round summary). Keep it concise.
+
+              Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            json:
+              type: object
+              required: [converged, highestSeverity, record]
+              properties:
+                converged: { type: boolean }
+                highestSeverity: { type: number }
+                record: { type: string, minLength: 1 }
+              additionalProperties: false
+      as: round2
+
+    - kind: agent
+      profile: brief-synthesizer
+      label: synthesizer
+      task: |-
+        Synthesize the debate over the brief at {params.target}.
+        Objective: {params.context}
+        Severity threshold used: {params.severity_threshold}.
+
+        BRIEF STRUCTURE:
+        {structure}
+
+        ROUND 1 JUDGE RECORD:
+        {round1.record}
+
+        ROUND 2 JUDGE RECORD (or a note that round 1 converged):
+        {round2.record}
+
+        Return Markdown with headings: ## Summary (overall strength, weakness counts, convergence),
+        ## Ranked attacks (each with Red reasoning, Blue rebuttal, judge assessment, and recommendation `Rn`),
+        ## Weak citations, ## Factual gaps, ## Recommendations (numbered R1… with the brief section each touches).
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: stress_test
+
+    - kind: agent
+      profile: attorney-gate
+      label: attorney-gate
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Accept fortification recommendations"
+        - summary: the complete STRESS TEST text below, unchanged, preceded by one line:
+          "Approve to apply all recommendations, or request changes and list the R-numbers to apply (e.g. 'apply R1, R3')."
+        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+
+        STRESS TEST:
+        {stress_test}
+      as: gate
+
+    - kind: agent
+      profile: brief-fortifier
+      label: fortifier
+      task: |-
+        Revise the brief at {params.target} (read the complete original text first).
+
+        ATTORNEY DECISION (if DECISION is approved with no R-numbers, apply every recommendation; if it lists
+        R-numbers, apply only those; if it is changes_requested with no R-numbers, apply only recommendations
+        tied to critical weaknesses; if skipped, apply every recommendation):
+        {gate}
+
+        RECOMMENDATIONS (from the stress test):
+        {stress_test}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: fortified
+
+    - kind: agent
+      profile: brief-report-writer
+      label: report
+      task: |-
+        Write the final stress-test report for {params.target}. Objective: {params.context}
+
+        The first line must be exactly:
+        # Brief stress test — [short document name]
+        Then: ## Executive summary, ## Attorney review focus, ## Ranked attacks, ## Weak citations,
+        ## Factual gaps, ## Attorney gate decision, ## Fortified brief (draft), ## Limitations.
+
+        Under ## Attorney review focus list every standout item as unchecked tasks:
+        - [ ] SEVERITY — issue; attorney question or recommended action
+        Use SEVERITY in {HIGH, MEDIUM, LOW} (map judge severity ≥8 HIGH, 5–7 MEDIUM, <5 LOW). Prefer 4–8 items; lead with HIGH.
+        Every unverified counter-authority must appear as a `[VERIFY]` item.
+
+        STRESS TEST:
+        {stress_test}
+
+        ATTORNEY GATE DECISION:
+        {gate}
+
+        FORTIFIED BRIEF:
+        {fortified}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report
+display: report

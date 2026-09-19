@@ -3,10 +3,12 @@ description: Prepare a readable Markdown map of a contract's legally meaningful 
 params:
   - { name: target, required: true }
   - { name: context, default: "No additional business context supplied." }
-agent: contract-segmenter
+profile: contract-segmenter
 task: |-
   Read the contract at {params.target}.
   Review context: {params.context}
   Return a human-readable Markdown preparation map. Identify legally meaningful sections,
   headings, source locations, useful excerpts, topics, assumptions, and questions. The result
   may use any Markdown structure that makes the document easy for another agent to understand.
+
+  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.

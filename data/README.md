@@ -1,44 +1,21 @@
 # OrchestratorAI - Pi data layout
 
-The first version uses files rather than a database. The layout separates stable definitions from matter material and time-based execution records.
-
 ```text
 data/
-├── catalog/
-│   ├── categories/
-│   ├── workflows/
-│   ├── agents/
-│   └── skills/
-├── matters/
-│   └── <matter-slug>/
-│       ├── matter.md
-│       ├── documents/
-│       ├── instructions/
-│       └── reviews/
-└── runs/
-    └── YYYY/
-        └── MM/
-            └── YYYY-MM-DD/
-                └── <run-id>/
-                    ├── manifest.json
-                    ├── request.md
-                    ├── trace.md
-                    ├── thinking.md
-                    ├── final.md
-                    └── checkpoints/
-                        └── 01-attorney-review.yaml
+├── orchestrator.sqlite   on-device run store (git-ignored; WAL sidecars alongside)
+└── runs/                 legacy per-run directories from the file-based first version
 ```
 
-## What belongs where
+## The run store
 
-- `catalog/` contains reusable workflow, agent, skill, and category definitions. These are stable and should not move merely because they were used on a particular date.
-- `matters/` contains the legal context and source documents for a matter. Matter folders use meaningful names rather than dates.
-- `runs/` contains immutable execution evidence. Runs are partitioned by year, month, and date so they remain easy to browse and archive.
+`orchestrator.sqlite` is written by the Pi extension (`.pi/extensions/orchestrator/`) and read by the macOS app. It holds three tables:
 
-Use ISO dates and stable slugs. Give every run a unique ID, such as `2026-08-10T091530Z-contract-review-01`, even when the folder already contains the date.
+- `runs` — one row per launch: workflow, title, source document, params, engine status (`queued` → `running` → `completed` | `failed` | `stopped`), and the final Markdown/JSON result.
+- `run_events` — the journal: every pi-agents run event with a human summary and, for completed nodes, the intermediate output.
+- `checkpoints` — attorney decisions. `gate` rows pause a live workflow until decided; `final_review` rows are created when a run completes and record Approve / Request changes.
 
-Every run also needs a human-readable title. A title should begin with the workflow kind and identify the primary document or effort, for example `Contract review — Mutual NDA` or `Policy comparison — Data retention policy`. Store that title in `manifest.json` and use it for the Pi session name and exported report filename.
+The app only ever writes checkpoint decisions and deletes; the engine journal belongs to Pi.
 
-The run status moves through values such as `running`, `awaiting_human_review`, `revision_requested`, and `completed`. The checkpoint YAML records the human decision without modifying the original document.
+## Matters and private material
 
-Real client documents and privileged material should remain in ignored private directories or outside the repository. Synthetic examples and reusable definitions may be checked in.
+Real client documents and privileged material stay in ignored private directories (`matters/**/private/`, `fixtures/private/`) or outside the repository. Synthetic examples may be checked in. The store itself is ignored because run results may contain privileged content.

@@ -1,25 +1,70 @@
 name: contract-review
-description: Run a text-first Red–Blue Review Team over a contract, arbitrate the two reviews, and produce an attorney-ready summary plus detailed report with a prioritized HITL checklist.
+description: Run a text-first Red–Blue Review Team over a contract, arbitrate the two reviews, pause for an attorney gate, and produce an attorney-ready summary plus detailed report with a prioritized HITL checklist.
 trigger: when the user asks to review, analyze, issue-spot, or summarize a contract
 params:
-  - { name: target, required: true }
-  - { name: reviewer_side, default: "the represented party" }
-  - { name: context, default: "Issue spotting and negotiation preparation. Identify assumptions and questions for attorney review." }
+  - { name: target, required: true, description: Path to the contract to review }
+  - { name: reviewer_side, default: "Receiving party", description: Which party we represent }
+  - { name: context, default: "Issue spotting and negotiation preparation. Identify assumptions and questions for attorney review.", description: Objective for the review team }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: red-blue-review → attorney gate → summary-generation.
+  The gate calls the `attorney_review` tool and blocks until counsel approves or
+  requests changes in the OrchestratorAI console; from the TUI (no console) it
+  is skipped automatically.
+
+  The block below is the launch UI the OrchestratorAI app renders for this
+  workflow. Field defaults come from `params`, so the workflow file is the single
+  source of truth for both the flow and its front end.
+
+  ```orchestrator-launch
+  title: Contract Review
+  icon: checklist
+  group: document-management
+  file: { label: contract, param: target }
+  fields:
+    - { param: reviewer_side, label: Our side, kind: choice, options: [Receiving party, Disclosing party, Both parties, Not specified] }
+    - { param: context, label: Objective, kind: text }
+  samples:
+    - { title: Mutual NDA, path: matters/contract-review/nda/example-mutual-nda.md }
+    - { title: Services agreement, path: matters/contract-review/services-agreement/example-services-agreement.md }
+    - { title: Fixture NDA, path: fixtures/example-nda.md }
+  review:
+    focusTitle: Attorney review focus
+    focusSubtitle: Work the Red/Blue standout issues before approving. Same shared HITL checkpoint as other Ready workflows.
+    blurb: Confirm Red/Blue findings and judgment calls in the report. Recording Approve or Request changes completes the attorney-review checkpoint — not a legal opinion.
+  ```
 flow:
   kind: sequence
   steps:
     - kind: workflow
       name: red-blue-review
+      label: red-blue-review
       params:
         target: "{params.target}"
         reviewer_side: "{params.reviewer_side}"
         context: "{params.context}"
       as: arbitration
+    - kind: agent
+      profile: attorney-gate
+      label: attorney-gate
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Arbitrated findings ready for attorney direction"
+        - summary: the complete ARBITRATION text below, unchanged.
+        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+        Do not review the contract yourself and do not add commentary.
+
+        ARBITRATION:
+        {arbitration}
+      as: gate
     - kind: workflow
       name: summary-generation
+      label: summary-generation
       params:
         arbitration: "{arbitration}"
         target: "{params.target}"
         context: "{params.context}"
+        attorney_notes: "{gate}"
       as: report
 display: report

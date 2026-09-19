@@ -2,6 +2,6 @@
   "sessionDir": ".pi/sessions",
   "enableSkillCommands": true,
   "packages": [
-    "npm:pi-agents@0.14.0"
+    "npm:pi-agents@0.21.0"
   ]
 }

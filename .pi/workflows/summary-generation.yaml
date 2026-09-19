@@ -4,12 +4,17 @@ params:
   - { name: arbitration, required: true }
   - { name: target, required: true }
   - { name: context, default: "No additional business context supplied." }
-agent: contract-summary-writer
+  - { name: attorney_notes, default: "", description: "Decision and comment from the attorney gate, if any" }
+profile: contract-summary-writer
 task: |-
   Produce the final contract-review package for {params.target}.
   Review context: {params.context}
   Arbitrated findings:
   {params.arbitration}
+
+  Attorney gate decision (may be empty or "skipped"; if it says changes_requested, address the
+  COMMENT explicitly in the report and reflect it under Recommended actions):
+  {params.attorney_notes}
 
   Return a complete human-readable Markdown report with these headings in this order:
   # Contract review — [short document name]
@@ -30,3 +35,5 @@ task: |-
   lists. Do not use Markdown tables, JSON, long unbroken paragraphs, or workflow-status
   commentary. Cite clause headings, line locations, or short source excerpts when available.
   State clearly that this is issue spotting for counsel, not a legal opinion.
+
+  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.

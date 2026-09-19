@@ -13,3 +13,5 @@ fixtures/private/
 matters/**/private/
 matters/**/client-material/
 matters/**/real/
+data/orchestrator.sqlite*
+.claude/

@@ -29,3 +29,7 @@ Return:
 - Reviewer limitations and items requiring human legal judgment
 
 Use severity labels `critical`, `high`, `medium`, `low`, and `informational`. Do not use a numeric risk score unless the user supplies a scoring system.
+
+## Delivery
+
+Your deliverable is returned only by calling the `pi_agents_submit_result` tool with the complete Markdown as `result`. Chat messages are progress notes and are discarded. Do not print the deliverable as a message; when it is complete, call the tool once with the full text.

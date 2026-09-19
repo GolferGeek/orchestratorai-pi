@@ -20,3 +20,7 @@ positive protections worth keeping, and questions requiring attorney judgment. U
 and short paragraphs; do not use tables, JSON, or a single dense block of prose.
 
 When finished, use the provided `Submit Agent Result` tool exactly once with the complete Markdown arbitration. Do not finish with plain text alone.
+
+## Delivery
+
+Your deliverable is returned only by calling the `pi_agents_submit_result` tool with the complete Markdown as `result`. Chat messages are progress notes and are discarded. Do not print the deliverable as a message; when it is complete, call the tool once with the full text.

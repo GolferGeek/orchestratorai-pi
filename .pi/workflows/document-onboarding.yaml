@@ -1,8 +1,30 @@
 name: document-onboarding
 description: Classify, inventory, check completeness, and issue-spot a document before deeper legal review. Produces an attorney-ready intake report with a prioritized review checklist.
 params:
-  - { name: target, required: true }
-  - { name: context, default: "Prepare this document for legal intake. Flag blockers, missing materials, and the recommended next workflow." }
+  - { name: target, required: true, description: Path to the document to onboard }
+  - { name: context, default: "Prepare this document for legal intake. Flag blockers, missing materials, and the recommended next workflow.", description: Intake goal }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: parallel classification + completeness check → onboarding summary.
+  No mid-flow gate; the attorney reviews the final intake report in the console.
+
+  ```orchestrator-launch
+  title: Document Onboarding
+  icon: doc.badge.plus
+  group: document-management
+  file: { label: document, param: target }
+  fields:
+    - { param: context, label: Intake goal, kind: text }
+  samples:
+    - { title: Incomplete services draft, path: fixtures/onboarding/incomplete-services-agreement.md }
+    - { title: Complete short lease, path: fixtures/onboarding/complete-short-lease.md }
+    - { title: Routing memo, path: fixtures/onboarding/routing-memo.md }
+    - { title: Conflicting NDA versions, path: fixtures/onboarding/conflicting-version-nda.md }
+  review:
+    focusTitle: Attorney intake focus
+    focusSubtitle: Mark each intake blocker or question as you verify it. Decisions are recorded on the shared attorney-review checkpoint.
+    blurb: Confirm intake findings, missing materials, and the recommended next workflow. Recording Approve or Request changes writes the attorney-review checkpoint for this run.
+  ```
 flow:
   kind: sequence
   steps:
@@ -10,7 +32,8 @@ flow:
       branches:
         classification:
           kind: agent
-          name: document-classifier
+          profile: document-classifier
+          label: classifier
           task: |-
             Read the complete document at {params.target}.
             Intake context: {params.context}
@@ -25,9 +48,12 @@ flow:
 
             Cite headings or short excerpts. Do not invent facts, law, or missing text.
             Do not write the final onboarding report; classification only.
+
+            Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
         completeness:
           kind: agent
-          name: document-completeness-checker
+          profile: document-completeness-checker
+          label: completeness-checker
           task: |-
             Read the complete document at {params.target}.
             Intake context: {params.context}
@@ -41,9 +67,12 @@ flow:
 
             Separate confirmed observations from questions. Do not invent missing text.
             Do not write the final onboarding report; completeness only.
+
+            Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: intake
     - kind: agent
-      name: document-onboarding-summary-writer
+      profile: document-onboarding-summary-writer
+      label: onboarding-summary
       task: |-
         Produce the final onboarding report for {params.target}.
         Intake context: {params.context}
@@ -67,4 +96,6 @@ flow:
         (e.g. contract-review, manual intake, privacy review, no further automated workflow)
         and one sentence of rationale. Preserve source references and distinguish facts,
         assumptions, and uncertainties.
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
 display: report

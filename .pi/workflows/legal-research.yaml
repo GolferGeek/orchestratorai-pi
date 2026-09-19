@@ -1,0 +1,184 @@
+name: legal-research
+description: Ask a legal question and get a structured research memorandum — sub-question planning, depth-first research against the firm knowledge folder with honest corpus-gap reporting, an attorney checkpoint (approve, deepen, or redirect), and a final report with a verification checklist.
+trigger: when the user asks a legal research question or asks for a research memo
+params:
+  - { name: question, required: true, description: "The legal question to research" }
+  - { name: jurisdiction, default: "Not specified", description: "Jurisdiction(s) in scope" }
+  - { name: practice_area, default: "Not specified", description: "Practice area" }
+  - { name: key_facts, default: "None supplied", description: "Key facts and constraints" }
+  - { name: knowledge_dir, default: "matters", description: "Folder searched as the firm knowledge base" }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: question analysis → map(sub-questions ∥) research → memo → attorney gate
+  (approve / deepen or redirect via the note) → optional deepening pass → report.
+  Ported from orchestratorai-local `legal/workflows/legal-research`. The "knowledge base" is a
+  folder the researchers grep and read; citations are verified only when found there.
+
+  ```orchestrator-launch
+  title: Legal Research
+  icon: books.vertical
+  group: research-knowledge
+  file: { kind: none }
+  fields:
+    - { param: question, label: Question, kind: text, default: "Can a receiving party under a mutual NDA rely on a residuals clause to use retained know-how in a competing product, and what limits apply?" }
+    - { param: jurisdiction, label: Jurisdiction, kind: line }
+    - { param: practice_area, label: Practice area, kind: line, default: "Commercial contracts / trade secrets" }
+    - { param: key_facts, label: Key facts, kind: text }
+    - { param: knowledge_dir, label: Knowledge folder, kind: line }
+  review:
+    focusTitle: Attorney verification focus
+    focusSubtitle: Every unverified authority and corpus gap is a checklist item. Verify before relying on the memo.
+    blurb: Confirm the memo's issue analysis and the verified/unverified split. Recording Approve or Request changes completes the attorney-review checkpoint — not a legal opinion.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: research-question-analyst
+      label: question-analysis
+      task: |-
+        Analyze this legal question and plan the research.
+        Question: {params.question}
+        Jurisdiction: {params.jurisdiction}
+        Practice area: {params.practice_area}
+        Key facts: {params.key_facts}
+        Firm knowledge folder (skim it with find/grep to calibrate the plan): {params.knowledge_dir}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      json:
+        type: object
+        required: [restatedQuestion, jurisdictions, subQuestions, researchPlan]
+        properties:
+          restatedQuestion: { type: string, minLength: 1 }
+          jurisdictions: { type: array, items: { type: string } }
+          subQuestions:
+            type: array
+            minItems: 2
+            maxItems: 5
+            items: { type: string, minLength: 1 }
+          researchPlan: { type: string }
+        additionalProperties: false
+      as: plan
+
+    - kind: map
+      label: research
+      over: "{plan.subQuestions}"
+      concurrency: 2
+      body:
+        kind: agent
+        profile: legal-researcher
+        label: researcher
+        task: |-
+          Research sub-question {index}: {item}
+          Main question (restated): {plan.restatedQuestion}
+          Jurisdictions: {plan.jurisdictions}
+          Practice area: {params.practice_area}
+          Key facts: {params.key_facts}
+          Firm knowledge folder to search with find/grep/read: {params.knowledge_dir}
+
+          Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: findings
+
+    - kind: agent
+      profile: research-memo-writer
+      label: memo
+      task: |-
+        Write the research memorandum.
+        Question (restated): {plan.restatedQuestion}
+        Jurisdictions: {plan.jurisdictions}
+        Research plan: {plan.researchPlan}
+
+        FINDINGS PER SUB-QUESTION:
+        {findings}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: memo
+
+    - kind: agent
+      profile: attorney-gate
+      label: attorney-gate
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Research memo ready — approve, deepen, or redirect"
+        - summary: the complete MEMO text below, unchanged, preceded by one line:
+          "Approve to finalize. Request changes and say what to deepen or which sub-questions to replace."
+        Then submit a JSON object {"decision": "<the DECISION value>", "comment": "<the COMMENT text>"}
+        built from the tool's returned lines.
+
+        MEMO:
+        {memo}
+      json:
+        type: object
+        required: [decision, comment]
+        properties:
+          decision: { type: string }
+          comment: { type: string }
+        additionalProperties: false
+      as: gate
+
+    - kind: switch
+      label: deepen-or-finalize
+      on: "{gate}"
+      cases:
+        - when: { eq: [decision, changes_requested] }
+          then:
+            kind: sequence
+            steps:
+              - kind: agent
+                profile: legal-researcher
+                label: deepening-researcher
+                task: |-
+                  The supervising attorney asked for deeper or redirected research:
+                  "{gate.comment}"
+                  Treat that instruction as the sub-question(s) to research now. Build on, do not repeat, the
+                  existing findings. Main question: {plan.restatedQuestion}. Jurisdictions: {plan.jurisdictions}.
+                  Firm knowledge folder: {params.knowledge_dir}
+
+                  EXISTING MEMO:
+                  {memo}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+                as: deeper
+              - kind: agent
+                profile: research-memo-writer
+                label: memo-revision
+                task: |-
+                  Revise the memorandum to incorporate the additional research, keeping the original structure.
+                  Attorney instruction: "{gate.comment}"
+
+                  ORIGINAL MEMO:
+                  {memo}
+
+                  ADDITIONAL FINDINGS:
+                  {deeper}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      else:
+        kind: value
+        value: "{memo}"
+      as: final_memo
+
+    - kind: agent
+      profile: research-report-writer
+      label: report
+      task: |-
+        Write the final research report.
+        The first line must be exactly:
+        # Legal research — [short question label]
+        Then: ## Short answer, ## Attorney review focus, ## Memorandum, ## Verified authorities,
+        ## Unverified authorities, ## Corpus gaps, ## Attorney gate decision, ## Limitations.
+
+        Under ## Attorney review focus list unchecked tasks:
+        - [ ] SEVERITY — issue; action
+        Use HIGH for unverified authority the answer depends on and for material corpus gaps, MEDIUM for
+        secondary points, LOW for housekeeping. Prefer 4–8 items; lead with HIGH.
+
+        ATTORNEY GATE DECISION: {gate.decision} — {gate.comment}
+
+        FINAL MEMO:
+        {final_memo}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report
+display: report

@@ -16,3 +16,7 @@ Read the complete supplied document. Produce concise Markdown covering:
 - missing or uncertain metadata, labeled Assumption or Unknown.
 
 Use bullets and short paragraphs. Do not invent facts, law, or missing text. Submit the complete Markdown result.
+
+## Delivery
+
+Your deliverable is returned only by calling the `pi_agents_submit_result` tool with the complete Markdown as `result`. Chat messages are progress notes and are discarded. Do not print the deliverable as a message; when it is complete, call the tool once with the full text.

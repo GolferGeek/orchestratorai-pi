@@ -1,0 +1,46 @@
+name: kb-query
+description: Ask a focused question across the firm knowledge folder and get a cited answer — with a mode (Fast / Cited / Deep / Audit) and response shape.
+trigger: when the user asks a quick question that should be answered from firm knowledge with citations
+params:
+  - { name: question, required: true, description: "The question to answer" }
+  - { name: mode, default: "Cited", description: "Fast | Cited | Deep | Audit" }
+  - { name: response, default: "Cited answer", description: "Cited answer | Source comparison | Structured brief | Raw results" }
+  - { name: knowledge_dir, default: "matters", description: "Folder searched as the firm knowledge base" }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Flat single-agent workflow (no gate; the answer is reviewed in the console).
+  Ported from orchestratorai-local `legal/workflows/kb-query` (a RAG service) — here the
+  knowledge base is a folder the agent greps and reads, so every citation is a file path.
+
+  ```orchestrator-launch
+  title: Knowledge Base Query
+  icon: text.book.closed
+  group: research-knowledge
+  file: { kind: none }
+  fields:
+    - { param: question, label: Question, kind: text, default: "What confidentiality term and residuals rights do our example NDAs grant, and do any of them conflict?" }
+    - { param: mode, label: Mode, kind: choice, options: [Fast, Cited, Deep, Audit] }
+    - { param: response, label: Response, kind: choice, options: [Cited answer, Source comparison, Structured brief, Raw results] }
+    - { param: knowledge_dir, label: Knowledge folder, kind: line }
+  review:
+    focusTitle: Attorney review focus
+    focusSubtitle: Citations point at files in the knowledge folder; unverified statements are labeled.
+    blurb: Confirm the cited answer before relying on it. Recording Approve or Request changes completes the attorney-review checkpoint.
+  ```
+profile: kb-answerer
+task: |-
+  Question: {params.question}
+  Knowledge folder: {params.knowledge_dir}
+  Mode: {params.mode} — Fast: answer from the first strong hits, keep it short. Cited: balanced, cite every claim.
+  Deep: search broadly (synonyms, related terms), read more files, cover secondary points. Audit: also
+  surface passages that conflict with each other and flag risk.
+  Response shape: {params.response}.
+
+  The first line of the result must be exactly:
+  # Knowledge base query — [short question label]
+  Then the answer in the requested shape, a ## Sources section listing every file cited, and a
+  ## Attorney review focus section with unchecked tasks (`- [ ] SEVERITY — issue; action`) for any
+  conflict, gap, or unverified statement (HIGH/MEDIUM/LOW). If nothing needs review, include one LOW item
+  saying so.
+
+  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.

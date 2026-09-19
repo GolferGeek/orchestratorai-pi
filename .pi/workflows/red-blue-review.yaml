@@ -11,7 +11,8 @@ flow:
       branches:
         red:
           kind: agent
-          name: red-reviewer
+          profile: red-reviewer
+          label: red-reviewer
           thinking: medium
           task: |-
             Read and review the complete contract at {params.target}.
@@ -27,9 +28,12 @@ flow:
             Identify up to five material issues. For each issue state severity (HIGH/MEDIUM/LOW),
             the provision or source reference, the observation, practical impact on our side,
             and a concrete follow-up question or negotiation ask. Do not invent facts, law, or clauses.
+
+            Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
         blue:
           kind: agent
-          name: blue-reviewer
+          profile: blue-reviewer
+          label: blue-reviewer
           thinking: medium
           task: |-
             Read and review the complete contract at {params.target}.
@@ -46,9 +50,12 @@ flow:
             reference and explain why the risk is protected, limited, or commercially manageable
             for our side. Do not minimize a genuine material risk merely to balance Red.
             Do not invent facts, law, or clauses.
+
+            Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: team
     - kind: agent
-      name: contract-arbitrator
+      profile: contract-arbitrator
+      label: arbitrator
       thinking: medium
       task: |-
         Reconcile the two independent contract reviews below.
@@ -78,4 +85,6 @@ flow:
         Under Attorney judgment calls, use a numbered list of questions counsel must resolve.
         Use Markdown headings, bullets, and numbered lists; do not use tables, JSON, or a
         single dense paragraph.
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: arbitration

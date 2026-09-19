@@ -30,3 +30,7 @@ agreement can be binding.
 Under Recommended next workflow, name exactly one primary next step and one sentence of rationale.
 Preserve source references and distinguish facts, assumptions, and uncertainties. Submit the complete
 Markdown result exactly once.
+
+## Delivery
+
+Your deliverable is returned only by calling the `pi_agents_submit_result` tool with the complete Markdown as `result`. Chat messages are progress notes and are discarded. Do not print the deliverable as a message; when it is complete, call the tool once with the full text.

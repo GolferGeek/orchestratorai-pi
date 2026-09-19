@@ -4,35 +4,10 @@ import SwiftUI
 import Textual
 import UniformTypeIdentifiers
 
-struct PiRunRecord: Codable, Hashable, Identifiable {
-    let id: String
-    let title: String
-    let workflow: String
-    let sourceDocument: String
-    let startedAt: String
-    let completedAt: String?
-    let status: String
-    let relativeDirectory: String
-}
-
 struct AttorneyReviewItem: Identifiable, Hashable {
     let id: String
     let text: String
     let severity: String?
-
-    var displayText: String { text }
-}
-
-struct WorkflowDefinition: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let icon: String
-    let description: String
-    let fileLabel: String
-    let groupId: String
-    let status: WorkflowInstallStatus
-
-    var isReady: Bool { status == .ready }
 }
 
 @main
@@ -40,9 +15,9 @@ struct PiApp: App {
     var body: some Scene {
         WindowGroup("OrchestratorAI - Pi") {
             ContentView()
-                .frame(minWidth: 760, minHeight: 620)
+                .frame(minWidth: 960, idealWidth: 1500, minHeight: 720, idealHeight: 1150)
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
     }
 }
 
@@ -50,29 +25,35 @@ struct ContentView: View {
     @StateObject private var runner = PiRunner()
     @State private var selectedFile: URL?
     @State private var showingImporter = false
-    @State private var reviewerSide = "Receiving party"
-    @State private var reviewContext = "Issue spotting and negotiation preparation. Identify assumptions and questions for attorney review."
+    @State private var paramValues: [String: String] = [:]
     @State private var model = "qwen3.6:latest"
     @State private var selectedWorkflow = "contract-review"
     @State private var showingActivity = false
     @State private var reviewedIssueIDs: Set<String> = []
     @State private var reviewDecisionComment = ""
-    @State private var runPendingDeletion: PiRunRecord?
+    @State private var gateDecisionComment = ""
+    @State private var runPendingDeletion: RunRecord?
     @State private var showingDeleteConfirmation = false
     @State private var legalWorkflowsExpanded = true
     @State private var expandedGroups: Set<String> = Set(LegalWorkflowCatalog.groups.map(\.id))
-    @State private var projectDirectory = ContentView.findProjectDirectory()
+    @State private var projectDirectory = PiEnvironment.findProjectDirectory()
+    @State private var projectTrusted = false
+    @State private var workflows: [WorkflowDefinition] = []
 
-    private let sides = ["Receiving party", "Disclosing party", "Both parties", "Not specified"]
-
-    private var workflows: [WorkflowDefinition] {
-        LegalWorkflowCatalog.workflows(projectDirectory: projectDirectory)
-    }
-
-    private var activeWorkflow: WorkflowDefinition {
+    private var activeWorkflow: WorkflowDefinition? {
         workflows.first(where: { $0.id == selectedWorkflow })
             ?? workflows.first(where: { $0.id == "contract-review" })
-            ?? workflows[0]
+            ?? workflows.first
+    }
+
+    /// The run shown in the detail pane: the selected run when it belongs to the active workflow.
+    private var displayedRun: RunRecord? {
+        guard let run = runner.selectedRun, run.workflow == activeWorkflow?.id else { return nil }
+        return run
+    }
+
+    private var displayedState: ReviewState? {
+        displayedRun.map { runner.reviewState(for: $0) }
     }
 
     var body: some View {
@@ -84,10 +65,13 @@ struct ContentView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
+                        if !projectTrusted { trustCard }
+                        if runner.storeUnavailable { storeCard }
                         taskCard
-                        if activeWorkflow.isReady || !runner.markdownReport.isEmpty {
+                        if let workflow = activeWorkflow, workflow.isReady || displayedRun != nil {
                             contextCard
                             sourceDocumentCard
+                            gateCard
                             attorneyReviewCard
                             resultCard
                             humanReviewCard
@@ -99,29 +83,28 @@ struct ContentView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
-            projectDirectory = Self.findProjectDirectory()
-            runner.loadRuns(projectDirectory: projectDirectory)
-            if workflows.contains(where: { $0.id == runner.currentWorkflow }) {
-                selectedWorkflow = runner.currentWorkflow
+            reloadProject()
+            runner.attach(projectDirectory: projectDirectory)
+            if let run = runner.selectedRun, workflows.contains(where: { $0.id == run.workflow }) {
+                selectedWorkflow = run.workflow
             } else if let firstReady = workflows.first(where: \.isReady) {
                 selectedWorkflow = firstReady.id
             }
+            resetParams()
         }
-        .onChange(of: selectedWorkflow) { _, newValue in
+        .onChange(of: selectedWorkflow) { _, _ in
             reviewedIssueIDs = []
             reviewDecisionComment = ""
-            reviewContext = Self.defaultContext(for: newValue)
-            if newValue == "contract-review" && !sides.contains(reviewerSide) {
-                reviewerSide = "Receiving party"
-            }
-            if selectedWorkflow != runner.currentWorkflow {
+            gateDecisionComment = ""
+            resetParams()
+            if runner.selectedRun?.workflow != selectedWorkflow {
                 selectedFile = nil
-                runner.clearDisplayedRun()
+                runner.select(runId: nil)
             }
         }
         .fileImporter(
             isPresented: $showingImporter,
-            allowedContentTypes: [.item, .data, .text, .pdf],
+            allowedContentTypes: activeWorkflow?.launch?.inputKind == .folder ? [.folder] : [.item, .data, .text, .pdf],
             allowsMultipleSelection: false
         ) { result in
             if case .success(let urls) = result {
@@ -136,18 +119,28 @@ struct ContentView: View {
         } message: {
             Text(runner.errorMessage ?? "Unknown error")
         }
-        .alert("Delete this review?", isPresented: $showingDeleteConfirmation) {
-            Button("Delete Review", role: .destructive) {
-                if let run = runPendingDeletion {
-                    runner.deleteRun(run, projectDirectory: Self.findProjectDirectory())
-                }
+        .alert("Delete this run?", isPresented: $showingDeleteConfirmation) {
+            Button("Delete Run", role: .destructive) {
+                if let run = runPendingDeletion { runner.deleteRun(run) }
                 runPendingDeletion = nil
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This will permanently delete the complete dated run directory, including its report, thinking notes, trace, request, manifest, and checkpoints.\n\n\(runPendingDeletion?.title ?? "This review")")
+            Text("This permanently removes the run, its journal, and its attorney checkpoints from the on-device store.\n\n\(runPendingDeletion?.title ?? "This run")")
         }
     }
+
+    private func reloadProject() {
+        projectDirectory = PiEnvironment.findProjectDirectory()
+        workflows = LegalWorkflowCatalog.workflows(projectDirectory: projectDirectory)
+        projectTrusted = PiEnvironment.isProjectTrusted(projectDirectory)
+    }
+
+    private func resetParams() {
+        paramValues = activeWorkflow?.launch?.initialValues() ?? [:]
+    }
+
+    // MARK: Sidebar
 
     private var workflowSidebar: some View {
         List(selection: $selectedWorkflow) {
@@ -192,96 +185,15 @@ struct ContentView: View {
 
                                 if expandedGroups.contains(group.id) {
                                     ForEach(items) { workflow in
-                                        Button {
-                                            selectedWorkflow = workflow.id
-                                        } label: {
-                                            VStack(alignment: .leading, spacing: 3) {
-                                                HStack(spacing: 6) {
-                                                    Label(workflow.title, systemImage: workflow.icon)
-                                                        .font(.callout)
-                                                    Spacer(minLength: 0)
-                                                    Text(workflow.status.label)
-                                                        .font(.caption2.weight(.semibold))
-                                                        .padding(.horizontal, 6)
-                                                        .padding(.vertical, 2)
-                                                        .background(workflow.isReady ? Color.green.opacity(0.18) : Color.secondary.opacity(0.14))
-                                                        .foregroundStyle(workflow.isReady ? Color.green : Color.secondary)
-                                                        .clipShape(Capsule())
-                                                }
-                                                Text(workflow.description)
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.secondary)
-                                                    .padding(.leading, 24)
-                                            }
-                                            .padding(.leading, 36)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .tag(workflow.id)
+                                        workflowRow(workflow)
                                     }
                                 }
                             }
                         }
                     }
 
-                    Text("Reviews")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 4)
-                    if runner.attentionReviewRuns.isEmpty {
-                        Text("No reviews awaiting action")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    } else {
-                        ForEach(runner.attentionReviewRuns) { run in
-                            HStack(spacing: 6) {
-                                Button {
-                                    openRun(run)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(run.title)
-                                            .font(.caption)
-                                            .lineLimit(1)
-                                        Text("\(run.status.replacingOccurrences(of: "_", with: " ")) · \(Self.displayDate(run.completedAt ?? run.startedAt))")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                Spacer(minLength: 0)
-                                deleteButton(for: run)
-                            }
-                        }
-                    }
-
-                    Text("Completed")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 8)
-                    if runner.completedReviewRuns.isEmpty {
-                        Text("No completed reviews")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    } else {
-                        ForEach(runner.completedReviewRuns) { run in
-                            HStack(spacing: 6) {
-                                Button {
-                                    openRun(run)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(run.title)
-                                            .font(.caption)
-                                            .lineLimit(1)
-                                        Text("\(run.status.replacingOccurrences(of: "_", with: " ")) · \(Self.displayDate(run.completedAt ?? run.startedAt))")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                Spacer(minLength: 0)
-                                deleteButton(for: run)
-                            }
-                        }
-                    }
+                    runList(title: "Needs attention", runs: runner.attentionRuns, empty: "No runs awaiting action")
+                    runList(title: "Approved", runs: runner.completedRuns, empty: "No approved runs")
                 }
                 .padding(.vertical, 4)
             }
@@ -291,25 +203,92 @@ struct ContentView: View {
         .frame(minWidth: 260)
     }
 
-    private func deleteButton(for run: PiRunRecord) -> some View {
+    private func workflowRow(_ workflow: WorkflowDefinition) -> some View {
         Button {
-            runPendingDeletion = run
-            showingDeleteConfirmation = true
+            selectedWorkflow = workflow.id
         } label: {
-            Image(systemName: "trash")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Label(workflow.title, systemImage: workflow.icon)
+                        .font(.callout)
+                    Spacer(minLength: 0)
+                    Text(workflow.status.label)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(workflow.isReady ? Color.green.opacity(0.18) : Color.secondary.opacity(0.14))
+                        .foregroundStyle(workflow.isReady ? Color.green : Color.secondary)
+                        .clipShape(Capsule())
+                }
+                Text(workflow.description)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 24)
+            }
+            .padding(.leading, 36)
         }
-        .buttonStyle(.borderless)
-        .help("Delete this review and all of its run files")
+        .buttonStyle(.plain)
+        .tag(workflow.id)
     }
 
-    private func openRun(_ run: PiRunRecord) {
-        selectedWorkflow = run.workflow
+    @ViewBuilder
+    private func runList(title: String, runs: [RunRecord], empty: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 8)
+        if runs.isEmpty {
+            Text(empty)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        } else {
+            ForEach(runs) { run in
+                let state = runner.reviewState(for: run)
+                HStack(spacing: 6) {
+                    Button {
+                        openRun(run)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(run.title)
+                                .font(.caption.weight(run.id == runner.selectedRunId ? .semibold : .regular))
+                                .lineLimit(1)
+                            Text("\(state.label) · \(Self.displayDate(run.completedAt ?? run.createdAt))")
+                                .font(.caption2)
+                                .foregroundStyle(state.isLive ? Color.orange : Color.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    Spacer(minLength: 0)
+                    Button {
+                        runPendingDeletion = run
+                        showingDeleteConfirmation = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Delete this run and its journal")
+                }
+            }
+        }
+    }
+
+    private func openRun(_ run: RunRecord) {
         reviewedIssueIDs = []
         reviewDecisionComment = ""
-        runner.loadRun(run, projectDirectory: Self.findProjectDirectory())
+        gateDecisionComment = ""
+        selectedWorkflow = run.workflow
+        runner.select(runId: run.id)
+        if let source = run.sourceDocument, source.hasPrefix("/") {
+            selectedFile = URL(fileURLWithPath: source)
+        } else {
+            selectedFile = nil
+        }
+        paramValues.merge(run.params) { _, stored in stored }
     }
+
+    // MARK: Header and setup cards
 
     private var header: some View {
         HStack(spacing: 12) {
@@ -319,19 +298,19 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("OrchestratorAI - Pi")
                     .font(.title2.weight(.semibold))
-                Text(activeWorkflow.title)
+                Text(activeWorkflow?.title ?? "Workflows")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             Spacer()
             Circle()
-                .fill(runner.isRunning ? .orange : .green)
+                .fill(runner.isRunning || (displayedState?.isLive ?? false) ? .orange : .green)
                 .frame(width: 9, height: 9)
-            Text(runner.status)
+            Text(displayedState?.label ?? runner.status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if !runner.runTitle.isEmpty {
-                Text("· \(runner.runTitle)")
+            if let run = displayedRun {
+                Text("· \(run.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -342,154 +321,216 @@ struct ContentView: View {
         .background(.regularMaterial)
     }
 
+    private var trustCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Pi has not trusted this project yet", systemImage: "lock.shield")
+                    .font(.headline)
+                Text("Delegated agents are spawned by Pi without the app's approval flag, so the project must be trusted in ~/.pi/agent/trust.json before workflow agents can load project profiles, skills, and the attorney gate. This is the same decision `/trust` records in the Pi terminal.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(projectDirectory.path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.tertiary)
+                Button("Trust this project for Pi") {
+                    do {
+                        try PiEnvironment.trustProject(projectDirectory)
+                        projectTrusted = true
+                    } catch {
+                        runner.errorMessage = "Could not save the trust decision: \(error.localizedDescription)"
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(8)
+        }
+    }
+
+    private var storeCard: some View {
+        GroupBox {
+            Label("Could not open data/orchestrator.sqlite in \(projectDirectory.path)", systemImage: "externaldrive.badge.xmark")
+                .font(.callout)
+                .foregroundStyle(.red)
+                .padding(8)
+        }
+    }
+
+    // MARK: Launch
+
     private var taskCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 8) {
-                            Text(activeWorkflow.title)
-                                .font(.title3.weight(.semibold))
-                            Text(activeWorkflow.status.label)
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(activeWorkflow.isReady ? Color.green.opacity(0.18) : Color.secondary.opacity(0.14))
-                                .foregroundStyle(activeWorkflow.isReady ? Color.green : Color.secondary)
-                                .clipShape(Capsule())
-                        }
-                        Text(activeWorkflow.description)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: activeWorkflow.icon)
-                        .font(.largeTitle)
-                        .foregroundStyle(.blue.opacity(0.75))
-                }
-
-                if activeWorkflow.isReady {
-                    Button {
-                        showingImporter = true
-                    } label: {
-                        Label(
-                            selectedFile == nil ? "Choose a \(activeWorkflow.fileLabel)" : "Choose a different \(activeWorkflow.fileLabel)",
-                            systemImage: "folder"
-                        )
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.bordered)
-
-                    if let selectedFile {
-                        Label(selectedFile.path, systemImage: "doc")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-
-                    if !sampleDocuments(for: activeWorkflow.id).isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Demo samples")
-                                .font(.caption.weight(.semibold))
+                if let workflow = activeWorkflow {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(workflow.title)
+                                    .font(.title3.weight(.semibold))
+                                Text(workflow.status.label)
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(workflow.isReady ? Color.green.opacity(0.18) : Color.secondary.opacity(0.14))
+                                    .foregroundStyle(workflow.isReady ? Color.green : Color.secondary)
+                                    .clipShape(Capsule())
+                            }
+                            Text(workflow.description)
                                 .foregroundStyle(.secondary)
-                            // Keep sample picks on the shared launch card — not a per-workflow screen.
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(sampleDocuments(for: activeWorkflow.id)) { sample in
-                                    let url = projectDirectory.appendingPathComponent(sample.relativePath)
-                                    let exists = FileManager.default.fileExists(atPath: url.path)
-                                    Button {
-                                        guard exists else {
-                                            runner.errorMessage = "Demo sample missing: \(sample.relativePath)"
-                                            return
-                                        }
-                                        selectedFile = url
-                                    } label: {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: selectedFile?.path == url.path ? "checkmark.circle.fill" : "doc.text")
-                                            Text(sample.title)
-                                            Spacer(minLength: 0)
-                                            if !exists {
-                                                Text("missing")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.red)
-                                            }
-                                        }
-                                        .font(.caption)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .disabled(!exists)
-                                }
-                            }
                         }
+                        Spacer()
+                        Image(systemName: workflow.icon)
+                            .font(.largeTitle)
+                            .foregroundStyle(.blue.opacity(0.75))
                     }
 
-                    HStack {
-                        Button {
-                            startReview()
-                        } label: {
-                            Label(runner.isRunning ? "Working…" : "Start local workflow", systemImage: "play.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(selectedFile == nil || runner.isRunning)
-
-                        if runner.isRunning {
-                            Button("Stop", role: .destructive) {
-                                runner.stop()
-                            }
-                        }
+                    if let launch = workflow.launch {
+                        launchControls(workflow: workflow, launch: launch)
+                    } else {
+                        notInstalled(workflow: workflow)
                     }
                 } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Not installed yet", systemImage: "hourglass")
-                            .font(.subheadline.weight(.semibold))
-                        Text("No `.pi/workflows/\(activeWorkflow.id).yaml` in this project. The Legal catalog lists every offering honestly — this entry uses the shared launch UI once its workflow YAML and agents are added.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Text("Document Onboarding and Contract Review are Ready. Remaining workflows share this same launch path when installed.")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.secondary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                    Button {
-                        // Intentionally disabled — do not fake a run.
-                    } label: {
-                        Label("Start local workflow", systemImage: "play.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(true)
+                    Text("No workflows found in \(projectDirectory.appendingPathComponent(".pi/workflows").path)")
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(8)
         }
     }
 
-    private var contextCard: some View {
-        Group {
-            if activeWorkflow.isReady {
-                GroupBox(contextCardTitle) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if activeWorkflow.id == "contract-review" {
-                            HStack {
-                                Text("Our side")
-                                    .frame(width: 90, alignment: .leading)
-                                Picker("Our side", selection: $reviewerSide) {
-                                    ForEach(sides, id: \.self) { Text($0).tag($0) }
-                                }
-                                .labelsHidden()
+    /// Start is allowed once the input the launch block asks for is present.
+    private func canStart(_ launch: WorkflowLaunchSpec) -> Bool {
+        switch launch.inputKind {
+        case .file, .folder:
+            return selectedFile != nil
+        case .none:
+            return launch.requiredFieldParams.allSatisfy { !(paramValues[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }
+    }
+
+    @ViewBuilder
+    private func launchControls(workflow: WorkflowDefinition, launch: WorkflowLaunchSpec) -> some View {
+        if launch.inputKind != .none {
+            Button {
+                showingImporter = true
+            } label: {
+                Label(
+                    selectedFile == nil ? "Choose a \(launch.fileLabel)" : "Choose a different \(launch.fileLabel)",
+                    systemImage: launch.inputKind == .folder ? "folder.badge.plus" : "folder"
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.bordered)
+        } else {
+            Text("No document upload — fill in the fields below, then start.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        if let selectedFile, launch.inputKind != .none {
+            Label(selectedFile.path, systemImage: "doc")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+
+        if !launch.samples.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Demo samples")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                // Samples come from the workflow's own launch block — not a per-workflow screen.
+                ForEach(launch.samples) { sample in
+                    let url = projectDirectory.appendingPathComponent(sample.relativePath)
+                    let exists = FileManager.default.fileExists(atPath: url.path)
+                    Button {
+                        guard exists else {
+                            runner.errorMessage = "Demo sample missing: \(sample.relativePath)"
+                            return
+                        }
+                        selectedFile = url
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: selectedFile?.path == url.path ? "checkmark.circle.fill" : "doc.text")
+                            Text(sample.title)
+                            Spacer(minLength: 0)
+                            if !exists {
+                                Text("missing")
+                                    .font(.caption2)
+                                    .foregroundStyle(.red)
                             }
                         }
+                        .font(.caption)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!exists)
+                }
+            }
+        }
 
-                        HStack(alignment: .top) {
-                            Text(contextObjectiveLabel)
-                                .frame(width: 90, alignment: .leading)
-                            TextEditor(text: $reviewContext)
-                                .font(.body)
-                                .frame(minHeight: 68)
-                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+        HStack {
+            Button {
+                startRun(workflow: workflow, launch: launch)
+            } label: {
+                Label(runner.isRunning ? "Working…" : "Start local workflow", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canStart(launch) || runner.isRunning || !projectTrusted)
+
+            if runner.isRunning {
+                Button("Stop", role: .destructive) {
+                    runner.stop()
+                }
+            }
+        }
+    }
+
+    private func notInstalled(workflow: WorkflowDefinition) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Not installed yet", systemImage: "hourglass")
+                .font(.subheadline.weight(.semibold))
+            Text("No `.pi/workflows/\(workflow.id).yaml` in this project. Add the workflow YAML with an `orchestrator-launch` block in its `doc:` and it appears here with its own launch UI — no app change needed.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button {
+                // Intentionally disabled — do not fake a run.
+            } label: {
+                Label("Start local workflow", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var contextCard: some View {
+        Group {
+            if let launch = activeWorkflow?.launch {
+                GroupBox("Workflow context") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(launch.fields) { field in
+                            HStack(alignment: field.kind == .text ? .top : .center) {
+                                Text(field.label)
+                                    .frame(width: 90, alignment: .leading)
+                                switch field.kind {
+                                case .choice:
+                                    Picker(field.label, selection: binding(for: field.param)) {
+                                        ForEach(field.options, id: \.self) { Text($0).tag($0) }
+                                    }
+                                    .labelsHidden()
+                                case .line:
+                                    TextField(field.label, text: binding(for: field.param))
+                                        .textFieldStyle(.roundedBorder)
+                                case .text:
+                                    TextEditor(text: binding(for: field.param))
+                                        .font(.body)
+                                        .frame(minHeight: 68)
+                                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                                }
+                            }
                         }
 
                         HStack {
@@ -508,20 +549,98 @@ struct ContentView: View {
         }
     }
 
-    private var contextCardTitle: String {
-        switch activeWorkflow.id {
-        case "contract-review": return "Review context"
-        case "document-onboarding": return "Onboarding context"
-        default: return "Workflow context"
+    private func binding(for param: String) -> Binding<String> {
+        Binding(
+            get: { paramValues[param] ?? "" },
+            set: { paramValues[param] = $0 }
+        )
+    }
+
+    private func startRun(workflow: WorkflowDefinition, launch: WorkflowLaunchSpec) {
+        var params = paramValues
+        params.removeValue(forKey: "run_id")
+        let source: String
+        if launch.inputKind == .none {
+            // Title the run after the first required field (e.g. the research question).
+            let key = launch.fields.first(where: { launch.requiredFieldParams.contains($0.param) })?.param ?? launch.fields.first?.param ?? ""
+            source = String((paramValues[key] ?? workflow.title).prefix(80))
+        } else {
+            guard let selectedFile else { return }
+            params[launch.fileParam] = selectedFile.path
+            source = selectedFile.path
+        }
+        reviewedIssueIDs = []
+        reviewDecisionComment = ""
+        gateDecisionComment = ""
+        runner.start(workflow: workflow, params: params, sourceDocument: source, model: model)
+    }
+
+    // MARK: Gate (mid-flow attorney decision)
+
+    private var gateCard: some View {
+        Group {
+            if let run = displayedRun, case .awaitingGate(let gate) = runner.reviewState(for: run) {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Label(gate.title, systemImage: "hand.raised.fill")
+                                .font(.headline)
+                            Spacer()
+                            Text("Workflow paused")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Color.orange.opacity(0.18))
+                                .foregroundStyle(.orange)
+                                .clipShape(Capsule())
+                        }
+                        Text("An agent is waiting on your direction before the workflow continues. Your decision and note are handed back to the next step verbatim.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+
+                        if let summary = gate.summaryMarkdown, !summary.isEmpty {
+                            ScrollView {
+                                StructuredText(markdown: summary)
+                                    .textual.structuredTextStyle(.gitHub)
+                                    .textual.textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(14)
+                            }
+                            .frame(minHeight: 160, maxHeight: 360)
+                            .background(Color(nsColor: .textBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+
+                        TextField("Direction for the next step (optional)…", text: $gateDecisionComment)
+                            .textFieldStyle(.roundedBorder)
+
+                        HStack {
+                            Button("Approve and continue") {
+                                runner.decide(checkpoint: gate, approved: true, comment: gateDecisionComment)
+                                gateDecisionComment = ""
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button("Request changes and continue") {
+                                runner.decide(checkpoint: gate, approved: false, comment: gateDecisionComment)
+                                gateDecisionComment = ""
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(8)
+                }
+            }
         }
     }
 
-    private var contextObjectiveLabel: String {
-        switch activeWorkflow.id {
-        case "contract-review": return "Objective"
-        case "document-onboarding": return "Intake goal"
-        default: return "Goal"
-        }
+    // MARK: Report
+
+    private var finalMarkdown: String {
+        displayedRun?.resultMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private var attorneyReviewItems: [AttorneyReviewItem] {
+        Self.parseAttorneyItems(from: finalMarkdown)
     }
 
     private var resultCard: some View {
@@ -537,50 +656,63 @@ struct ContentView: View {
                         Label("Save Markdown", systemImage: "square.and.arrow.down")
                     }
                     .buttonStyle(.borderless)
-                    .disabled(runner.markdownReport.isEmpty || runner.isRunning)
+                    .disabled(finalMarkdown.isEmpty)
                 }
 
-                if runner.workflowFailed && runner.finalMarkdown.isEmpty {
-                    VStack(spacing: 10) {
-                        Image(systemName: "xmark.octagon")
-                            .font(.largeTitle)
-                            .foregroundStyle(.red)
-                        Text("Workflow failed")
-                            .font(.headline)
-                        Text(runner.failureMessage ?? "The local workflow stopped without a final report. Check Activity for the failing step, fix the input or model, and re-run. No alternate workflow was launched.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
+                if let run = displayedRun, let state = displayedState {
+                    if state == .failed || state == .stopped, finalMarkdown.isEmpty {
+                        VStack(spacing: 10) {
+                            Image(systemName: "xmark.octagon")
+                                .font(.largeTitle)
+                                .foregroundStyle(.red)
+                            Text(state == .failed ? "Workflow failed" : "Workflow stopped")
+                                .font(.headline)
+                            Text(run.error ?? "The local workflow stopped without a final report. Check Activity for the failing step, fix the input or model, and re-run. No alternate workflow was launched.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                        .padding(.horizontal, 12)
+                    } else if finalMarkdown.isEmpty {
+                        VStack(spacing: 10) {
+                            ProgressView()
+                            Text(state.label)
+                                .font(.headline)
+                            Text(runner.events.last?.summary ?? "Waiting for the first agent…")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                        .padding(.horizontal, 12)
+                    } else {
+                        ScrollView {
+                            StructuredText(markdown: finalMarkdown)
+                                .textual.structuredTextStyle(.gitHub)
+                                .textual.textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(14)
+                        }
+                        .frame(minHeight: 260, maxHeight: 430)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 220)
-                    .padding(.horizontal, 12)
-                } else if runner.markdownReport.isEmpty {
+                    activitySection
+                } else {
                     VStack(spacing: 10) {
                         Image(systemName: "doc.text.magnifyingglass")
                             .font(.largeTitle)
                             .foregroundStyle(.secondary)
-                        Text(activeWorkflow.isReady ? "No report yet" : "Workflow not installed")
+                        Text("No report yet")
                             .font(.headline)
-                        Text(activeWorkflow.isReady
-                             ? "Choose a \(activeWorkflow.fileLabel) (or a demo sample), set context, and start the local workflow. Results and the attorney checklist appear here."
-                             : "This catalog entry is Coming soon — Start stays disabled until its YAML is installed.")
+                        Text("Choose a \(activeWorkflow?.fileLabel ?? "document") (or a demo sample), set context, and start the local workflow. Results and the attorney checklist appear here.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity, minHeight: 220)
                     .padding(.horizontal, 12)
-                } else {
-                    ScrollView {
-                        reportContent
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(14)
-                    }
-                    .frame(minHeight: 260, maxHeight: 430)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                    activitySection
                 }
             }
             .padding(8)
@@ -588,12 +720,13 @@ struct ContentView: View {
     }
 
     private var attorneyReviewCard: some View {
-        let items = runner.attorneyReviewItems
+        let items = attorneyReviewItems
         let reviewedCount = reviewedIssueIDs.intersection(Set(items.map(\.id))).count
+        let copy = activeWorkflow?.launch?.review ?? LaunchReviewCopy()
         return GroupBox {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline) {
-                    Label(attorneyFocusTitle, systemImage: "exclamationmark.bubble")
+                    Label(copy.focusTitle, systemImage: "exclamationmark.bubble")
                         .font(.headline)
                     Spacer()
                     if !items.isEmpty {
@@ -603,19 +736,19 @@ struct ContentView: View {
                     }
                 }
 
-                Text(attorneyFocusSubtitle)
+                Text(copy.focusSubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if runner.isRunning {
+                if let state = displayedState, state.isLive {
                     Label("Workflow running — checklist appears when the report is ready.", systemImage: "hourglass")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                } else if runner.workflowFailed {
-                    Label("No checklist — the workflow failed before a report was produced.", systemImage: "xmark.octagon")
+                } else if displayedState == .failed || displayedState == .stopped {
+                    Label("No checklist — the workflow ended before a report was produced.", systemImage: "xmark.octagon")
                         .font(.caption)
                         .foregroundStyle(.red)
-                } else if runner.finalMarkdown.isEmpty {
+                } else if finalMarkdown.isEmpty {
                     Text("After you run a Ready workflow, prioritized issues for counsel appear here as a shared checklist (same HITL path for every workflow).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -629,10 +762,8 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    if !items.isEmpty {
-                        ProgressView(value: Double(reviewedCount), total: Double(max(items.count, 1)))
-                            .tint(reviewedCount == items.count ? .green : .orange)
-                    }
+                    ProgressView(value: Double(reviewedCount), total: Double(max(items.count, 1)))
+                        .tint(reviewedCount == items.count ? .green : .orange)
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(items) { item in
                             Button {
@@ -654,7 +785,7 @@ struct ContentView: View {
                                             .foregroundStyle(severityTint(severity))
                                             .clipShape(Capsule())
                                     }
-                                    Text(item.displayText)
+                                    Text(item.text)
                                         .font(.callout)
                                         .foregroundStyle(.primary)
                                         .multilineTextAlignment(.leading)
@@ -670,25 +801,6 @@ struct ContentView: View {
         }
     }
 
-    private var attorneyFocusTitle: String {
-        switch activeWorkflow.id {
-        case "document-onboarding": return "Attorney intake focus"
-        case "contract-review": return "Attorney review focus"
-        default: return "Attorney review focus"
-        }
-    }
-
-    private var attorneyFocusSubtitle: String {
-        switch activeWorkflow.id {
-        case "document-onboarding":
-            return "Mark each intake blocker or question as you verify it. Decisions are recorded on the shared attorney-review checkpoint."
-        case "contract-review":
-            return "Work the Red/Blue standout issues before approving. Same shared HITL checkpoint as other Ready workflows."
-        default:
-            return "Prioritized questions for counsel. Same shared human-review checkpoint for every Ready workflow."
-        }
-    }
-
     private func severityTint(_ severity: String) -> Color {
         switch severity.uppercased() {
         case "HIGH", "CRITICAL": return .red
@@ -699,106 +811,125 @@ struct ContentView: View {
     }
 
     private var humanReviewCard: some View {
-        let awaiting = runner.currentStatus == "awaiting_human_review" || runner.currentStatus == "revision_requested"
-        let items = runner.attorneyReviewItems
+        let items = attorneyReviewItems
         let reviewedCount = reviewedIssueIDs.intersection(Set(items.map(\.id))).count
         let allReviewed = items.isEmpty || reviewedCount == items.count
+        let copy = activeWorkflow?.launch?.review ?? LaunchReviewCopy()
 
         return Group {
-            if awaiting {
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Label(
-                                runner.currentStatus == "revision_requested"
-                                    ? "Changes requested — re-review when ready"
-                                    : "Attorney review required",
-                                systemImage: "person.badge.key"
-                            )
-                            .font(.headline)
-                            Spacer()
-                            Text(runner.currentStatus == "revision_requested" ? "Revision" : "HITL checkpoint")
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Color.orange.opacity(0.18))
-                                .foregroundStyle(.orange)
-                                .clipShape(Capsule())
-                        }
+            if let run = displayedRun, let state = displayedState {
+                let pendingFinal = runner.checkpoints(for: run.id).last(where: { $0.kind == "final_review" && $0.isPending })
+                if let pendingFinal {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Label("Attorney review required", systemImage: "person.badge.key")
+                                    .font(.headline)
+                                Spacer()
+                                Text("HITL checkpoint")
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(Color.orange.opacity(0.18))
+                                    .foregroundStyle(.orange)
+                                    .clipShape(Capsule())
+                            }
 
-                        Text(humanReviewBlurb)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
+                            Text(copy.blurb)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
 
-                        if !items.isEmpty {
-                            HStack(spacing: 8) {
-                                Image(systemName: allReviewed ? "checkmark.seal.fill" : "circle.dashed")
-                                    .foregroundStyle(allReviewed ? .green : .orange)
-                                Text(allReviewed
-                                     ? "All \(items.count) focus items marked reviewed."
-                                     : "\(reviewedCount) of \(items.count) focus items marked reviewed — finish the checklist above before approving when possible.")
+                            if !items.isEmpty {
+                                HStack(spacing: 8) {
+                                    Image(systemName: allReviewed ? "checkmark.seal.fill" : "circle.dashed")
+                                        .foregroundStyle(allReviewed ? .green : .orange)
+                                    Text(allReviewed
+                                         ? "All \(items.count) focus items marked reviewed."
+                                         : "\(reviewedCount) of \(items.count) focus items marked reviewed — finish the checklist above before approving when possible.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Text("No checklist items were parsed from the report. You can still approve or request changes after reading the full report.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                        } else {
-                            Text("No checklist items were parsed from the report. You can still approve or request changes after reading the full report.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
 
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Decision note (saved to checkpoint)")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            TextField(
-                                runner.currentStatus == "revision_requested"
-                                    ? "What still needs attention…"
-                                    : "Optional note for the matter file…",
-                                text: $reviewDecisionComment
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
-
-                        HStack {
-                            Button("Approve review") {
-                                runner.approveCurrentRun(comment: reviewDecisionComment)
-                                reviewDecisionComment = ""
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Decision note (saved to checkpoint)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                TextField("Optional note for the matter file…", text: $reviewDecisionComment)
+                                    .textFieldStyle(.roundedBorder)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(runner.isRunning)
 
-                            Button("Request changes") {
-                                runner.requestChangesForCurrentRun(comment: reviewDecisionComment)
-                                reviewDecisionComment = ""
+                            HStack {
+                                Button("Approve review") {
+                                    runner.decide(checkpoint: pendingFinal, approved: true, comment: reviewDecisionComment)
+                                    reviewDecisionComment = ""
+                                }
+                                .buttonStyle(.borderedProminent)
+
+                                Button("Request changes") {
+                                    runner.decide(checkpoint: pendingFinal, approved: false, comment: reviewDecisionComment)
+                                    reviewDecisionComment = ""
+                                }
+                                .buttonStyle(.bordered)
+                            }
+
+                            if !allReviewed && !items.isEmpty {
+                                Text("Approve stays available so demos are not blocked — the progress cue above is guidance, not a hard gate.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .padding(8)
+                    }
+                } else if state == .approved || state == .changesRequested {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label(state == .approved ? "Approved by attorney" : "Changes requested — re-run when ready", systemImage: state == .approved ? "checkmark.seal.fill" : "arrow.uturn.backward.circle")
+                                .font(.headline)
+                            ForEach(runner.checkpoints(for: run.id).filter { !$0.isPending }) { checkpoint in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: checkpoint.isGate ? "hand.raised" : "person.badge.key")
+                                        .foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(checkpoint.title) — \(checkpoint.status.replacingOccurrences(of: "_", with: " "))")
+                                            .font(.caption.weight(.semibold))
+                                        if let comment = checkpoint.decisionComment, !comment.isEmpty {
+                                            Text(comment)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Text(Self.displayDate(checkpoint.decidedAt ?? checkpoint.requestedAt))
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                            }
+                            Button("Reopen for review") {
+                                runner.reopenReview(runId: run.id)
                             }
                             .buttonStyle(.bordered)
-                            .disabled(runner.isRunning)
                         }
-
-                        if !allReviewed && !items.isEmpty {
-                            Text("Approve stays available so demos are not blocked — the progress cue above is guidance, not a hard gate.")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
                     }
-                    .padding(8)
                 }
             }
         }
     }
 
-    private var humanReviewBlurb: String {
-        switch activeWorkflow.id {
-        case "document-onboarding":
-            return "Confirm intake findings, missing materials, and the recommended next workflow. Recording Approve or Request changes writes the shared attorney-review checkpoint for this run."
-        case "contract-review":
-            return "Confirm Red/Blue findings and judgment calls in the report. Recording Approve or Request changes completes the shared attorney-review checkpoint — not a legal opinion."
-        default:
-            return "Review the report above and record a decision before this run is marked complete."
+    private var sourceDocumentCard: some View {
+        Group {
+            if activeWorkflow?.launch?.inputKind != LaunchInputKind.none {
+                sourceDocumentBox
+            }
         }
     }
 
-    private var sourceDocumentCard: some View {
+    private var sourceDocumentBox: some View {
         GroupBox {
             DisclosureGroup {
                 if let selectedFile,
@@ -815,101 +946,71 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else {
                     Text(selectedFile == nil
-                         ? "Choose a readable text or Markdown \(activeWorkflow.fileLabel) to preview it here."
+                         ? "Choose a readable text or Markdown \(activeWorkflow?.fileLabel ?? "document") to preview it here."
                          : "This file could not be previewed as UTF-8 text (binary/PDF previews are not shown). The workflow can still use the path if the runtime supports it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } label: {
-            Label(
-                selectedFile == nil ? "Source document" : "Source document — \(selectedFile?.deletingPathExtension().lastPathComponent ?? "")",
-                systemImage: "doc.plaintext"
-            )
-                    .font(.headline)
+                Label(
+                    selectedFile == nil ? "Source document" : "Source document — \(selectedFile?.deletingPathExtension().lastPathComponent ?? "")",
+                    systemImage: "doc.plaintext"
+                )
+                .font(.headline)
             }
             .padding(8)
         }
     }
 
-    private func startReview() {
-        guard activeWorkflow.isReady else {
-            runner.errorMessage = "\(activeWorkflow.title) is not installed yet (no workflow YAML)."
-            return
-        }
-        guard let selectedFile else { return }
-        let projectDirectory = Self.findProjectDirectory()
-        self.projectDirectory = projectDirectory
-        let documentTitle = selectedFile.deletingPathExtension().lastPathComponent
-        let runTitle = "\(activeWorkflow.title) — \(documentTitle)"
-        let prompt: String
-        switch activeWorkflow.id {
-        case "contract-review":
-            prompt = """
-            Run the saved contract-review workflow.
-
-            Target document: \(selectedFile.path)
-            Reviewer side: \(reviewerSide)
-            Review context: \(reviewContext)
-
-            Execute the complete text-first composed workflow: independent Red and Blue contract reviews, arbitration of their natural-language findings, and summary generation. Do not edit the source document. Preserve source references. Use severity HIGH/MEDIUM/LOW. Include an ## Attorney review focus section with unchecked tasks (`- [ ] SEVERITY — issue; action`). Clearly identify limitations and issues requiring human attorney judgment. This is issue spotting, not a legal opinion. Do not launch a retry or an alternate workflow if the composed workflow fails; report the failure instead.
-            """
-        case "document-onboarding":
-            prompt = """
-            Run the saved document-onboarding workflow.
-
-            Target document: \(selectedFile.path)
-            Intake goal: \(reviewContext)
-
-            Classify and inventory the document, check completeness, identify metadata and initial issues, and recommend exactly one next legal workflow. Do not edit the source document. Return a readable Markdown intake report titled "# Document onboarding — …" with an ## Attorney review focus checklist using `- [ ] SEVERITY — issue; action`, source references, and explicit uncertainties. Do not relabel the report as a contract review.
-            """
-        default:
-            // Shared launch path for future Ready workflows: invoke saved YAML by id.
-            prompt = """
-            Run the saved \(activeWorkflow.id) workflow.
-
-            Target document: \(selectedFile.path)
-            Context: \(reviewContext)
-
-            Execute the complete saved workflow. Do not edit the source document. Preserve source references and clearly identify limitations and issues requiring human attorney judgment. Do not launch a retry or an alternate workflow if the composed workflow fails; report the failure instead.
-            """
-        }
-        runner.start(prompt: prompt, projectDirectory: projectDirectory, model: model, runTitle: runTitle, workflow: activeWorkflow.id, sourceDocument: selectedFile.path)
-    }
-
     private func saveReport() {
-        guard !runner.markdownReport.isEmpty else { return }
+        guard !finalMarkdown.isEmpty, let run = displayedRun else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "\(runner.runTitle.replacingOccurrences(of: " — ", with: "-").replacingOccurrences(of: " ", with: "-"))-Report.md"
+        panel.nameFieldStringValue = "\(run.title.replacingOccurrences(of: " — ", with: "-").replacingOccurrences(of: " ", with: "-"))-Report.md"
+        let markdown = finalMarkdown
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             do {
-                try runner.markdownReport.write(to: url, atomically: true, encoding: .utf8)
+                try markdown.write(to: url, atomically: true, encoding: .utf8)
             } catch {
                 runner.errorMessage = "Could not save the report: \(error.localizedDescription)"
             }
         }
     }
 
-    @ViewBuilder
-    private var reportContent: some View {
-        StructuredText(markdown: runner.finalMarkdown)
-            .textual.structuredTextStyle(.gitHub)
-            .textual.textSelection(.enabled)
-    }
-
     private var activitySection: some View {
         DisclosureGroup(isExpanded: $showingActivity) {
             VStack(alignment: .leading, spacing: 10) {
-                if !runner.workflowTraceLines.isEmpty {
-                    Text("Live workflow activity")
+                if runner.events.isEmpty {
+                    Text("No journal entries yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Workflow journal")
                         .font(.subheadline.weight(.semibold))
                     VStack(alignment: .leading, spacing: 5) {
-                        ForEach(Array(runner.workflowTraceLines.enumerated()), id: \.offset) { _, line in
-                            Text(line)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(line.contains("Failed") || line.contains("Workflow failed") ? .red : .secondary)
-                                .textSelection(.enabled)
+                        ForEach(runner.events) { event in
+                            DisclosureGroup {
+                                if let detail = event.detail, !detail.isEmpty {
+                                    Text(detail)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.vertical, 4)
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text(Self.displayTime(event.at))
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.tertiary)
+                                    Text(event.summary)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(event.isFailure ? .red : .secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            .disclosureGroupStyle(.automatic)
                         }
                     }
                     .padding(10)
@@ -917,150 +1018,25 @@ struct ContentView: View {
                     .background(Color(nsColor: .controlBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 7))
                 }
-
-                if !runner.thinkingOutput.isEmpty {
-                    Text("Working notes")
-                        .font(.subheadline.weight(.semibold))
-                    Text(runner.thinkingOutput)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .frame(maxHeight: 140, alignment: .topLeading)
-                }
-
-                if !runner.traceOutput.isEmpty {
-                    Text("Trace")
-                        .font(.subheadline.weight(.semibold))
-                    Text(runner.traceOutput)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-
             }
             .padding(.top, 8)
         } label: {
             HStack {
                 Label("Activity", systemImage: "clock.arrow.circlepath")
                 Spacer()
-                Text(runner.activitySummary)
+                Text("\(runner.events.count) journal entries · \(displayedRun?.agents.map { "\($0) agent calls" } ?? "on-device store")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
     }
 
-    private struct DemoSample: Identifiable {
-        let id: String
-        let title: String
-        let relativePath: String
-    }
+    // MARK: Parsing helpers
 
-    private func sampleDocuments(for workflowId: String) -> [DemoSample] {
-        switch workflowId {
-        case "document-onboarding":
-            return [
-                DemoSample(id: "do-incomplete", title: "Incomplete services draft", relativePath: "fixtures/onboarding/incomplete-services-agreement.md"),
-                DemoSample(id: "do-lease", title: "Complete short lease", relativePath: "fixtures/onboarding/complete-short-lease.md"),
-                DemoSample(id: "do-memo", title: "Routing memo", relativePath: "fixtures/onboarding/routing-memo.md"),
-                DemoSample(id: "do-conflict", title: "Conflicting NDA versions", relativePath: "fixtures/onboarding/conflicting-version-nda.md"),
-            ]
-        case "contract-review":
-            return [
-                DemoSample(id: "cr-nda", title: "Mutual NDA", relativePath: "matters/contract-review/nda/example-mutual-nda.md"),
-                DemoSample(id: "cr-services", title: "Services agreement", relativePath: "matters/contract-review/services-agreement/example-services-agreement.md"),
-                DemoSample(id: "cr-fixture", title: "Fixture NDA", relativePath: "fixtures/example-nda.md"),
-            ]
-        default:
-            return []
-        }
-    }
-
-    private static func defaultContext(for workflowId: String) -> String {
-        switch workflowId {
-        case "document-onboarding":
-            return "Prepare this document for legal intake. Flag blockers, missing materials, and recommend the next workflow."
-        case "contract-review":
-            return "Issue spotting and negotiation preparation. Identify assumptions and questions for attorney review."
-        default:
-            return "Identify assumptions and questions for attorney review."
-        }
-    }
-
-    private static func findProjectDirectory() -> URL {
-        let fileManager = FileManager.default
-        let candidates = [
-            ProcessInfo.processInfo.environment["PI_PROJECT_PATH"].map(URL.init(fileURLWithPath:)),
-            URL(fileURLWithPath: fileManager.currentDirectoryPath),
-            Bundle.main.bundleURL
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-        ].compactMap { $0 }
-
-        if let match = candidates.first(where: {
-            fileManager.fileExists(atPath: $0.appendingPathComponent(".pi/settings.json").path)
-        }) {
-            return match
-        }
-        return candidates.first ?? URL(fileURLWithPath: fileManager.currentDirectoryPath)
-    }
-
-    private static func displayDate(_ value: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        guard let date = formatter.date(from: value) else { return value }
-        let display = DateFormatter()
-        display.dateStyle = .medium
-        display.timeStyle = .short
-        return display.string(from: date)
-    }
-}
-
-@MainActor
-final class PiRunner: ObservableObject {
-    @Published var output = ""
-    @Published var thinkingOutput = ""
-    @Published var traceOutput = ""
-    @Published var status = "Ready"
-    @Published var isRunning = false
-    @Published var errorMessage: String?
-    @Published var runTitle = ""
-    @Published var reviewRuns: [PiRunRecord] = []
-    @Published var currentStatus = ""
-    @Published var workflowTraceLines: [String] = []
-    @Published var workflowFailed = false
-    @Published var failureMessage: String?
-    @Published var currentWorkflow = "contract-review"
-
-    var pendingReviewRuns: [PiRunRecord] {
-        reviewRuns.filter { $0.status == "awaiting_human_review" || $0.status == "revision_requested" }
-    }
-
-    var attentionReviewRuns: [PiRunRecord] {
-        reviewRuns.filter { $0.status == "awaiting_human_review" || $0.status == "revision_requested" || $0.status == "failed" }
-    }
-
-    var completedReviewRuns: [PiRunRecord] {
-        reviewRuns.filter { $0.status == "completed" }
-    }
-
-    var finalMarkdown: String {
-        let report = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !report.isEmpty else { return "" }
-        if report.hasPrefix("#") {
-            if currentRun?.workflow == "document-onboarding", report.hasPrefix("# Contract review") {
-                return "# Document onboarding" + report.dropFirst("# Contract review".count)
-            }
-            return report
-        }
-        let title = currentRun?.workflow == "document-onboarding" ? "Document onboarding" : "Contract review"
-        return "# \(title)\n\n\(report)"
-    }
-
-    var attorneyReviewItems: [AttorneyReviewItem] {
-        let lines = finalMarkdown.components(separatedBy: .newlines)
+    static func parseAttorneyItems(from markdown: String) -> [AttorneyReviewItem] {
         var inQueue = false
         var items: [AttorneyReviewItem] = []
-        for line in lines {
+        for line in markdown.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.range(of: "^#{1,6}\\s+Attorney (review|intake) focus", options: [.regularExpression, .caseInsensitive]) != nil ||
                 trimmed.range(of: "^#{1,6}\\s+Issues requiring attorney review", options: [.regularExpression, .caseInsensitive]) != nil {
@@ -1071,15 +1047,15 @@ final class PiRunner: ObservableObject {
             guard inQueue, trimmed.hasPrefix("- [") else { continue }
             let value = trimmed.replacingOccurrences(of: "^- \\[.\\]\\s*", with: "", options: .regularExpression)
             guard !value.isEmpty else { continue }
-            let severity = Self.parseSeverity(from: value)
-            let display = Self.stripSeverityPrefix(from: value)
+            let severity = parseSeverity(from: value)
+            let display = stripSeverityPrefix(from: value)
             items.append(AttorneyReviewItem(id: "issue-\(items.count)-\(display)", text: display, severity: severity))
         }
         return items
     }
 
     private static func parseSeverity(from text: String) -> String? {
-        let pattern = #"^(CRITICAL|HIGH|MEDIUM|LOW|INFO)\b"#
+        let pattern = #"^\**(CRITICAL|HIGH|MEDIUM|LOW|INFO)\**\b"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return nil }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         guard let match = regex.firstMatch(in: text, options: [], range: range),
@@ -1089,8 +1065,9 @@ final class PiRunner: ObservableObject {
 
     private static func stripSeverityPrefix(from text: String) -> String {
         var result = text
-        if let severity = parseSeverity(from: text) {
-            result = String(result.dropFirst(severity.count))
+        if parseSeverity(from: text) != nil,
+           let range = result.range(of: #"^\**(CRITICAL|HIGH|MEDIUM|LOW|INFO)\**"#, options: [.regularExpression, .caseInsensitive]) {
+            result.removeSubrange(range)
         }
         result = result.trimmingCharacters(in: .whitespaces)
         if result.hasPrefix("—") || result.hasPrefix("-") || result.hasPrefix(":") {
@@ -1099,501 +1076,24 @@ final class PiRunner: ObservableObject {
         return result.isEmpty ? text : result
     }
 
-    var activitySummary: String {
-        let traceEvents = max(workflowTraceLines.count, traceOutput.split(separator: "\n").count)
-        let workingNotes = thinkingOutput.isEmpty ? "No working notes" : "Working notes available"
-        return "\(traceEvents) events · \(workingNotes)"
+    private static func displayDate(_ value: String) -> String {
+        guard let date = parseDate(value) else { return value }
+        let display = DateFormatter()
+        display.dateStyle = .medium
+        display.timeStyle = .short
+        return display.string(from: date)
     }
 
-    var markdownReport: String {
-        guard !output.isEmpty || !thinkingOutput.isEmpty || !traceOutput.isEmpty else { return "" }
-        return """
-        # OrchestratorAI - Pi workflow report
-
-        ## Final report
-
-        \(finalMarkdown.isEmpty ? "_No final report was returned._" : finalMarkdown)
-
-        ## Thinking / working notes
-
-        \(thinkingOutput.isEmpty ? "_No explicit thinking block was emitted by the model._" : thinkingOutput)
-
-        ## Tool and session trace
-
-        \(traceOutput.isEmpty ? "_No trace events were recorded._" : traceOutput)
-        """
+    private static func displayTime(_ value: String) -> String {
+        guard let date = parseDate(value) else { return value }
+        let display = DateFormatter()
+        display.dateFormat = "HH:mm:ss"
+        return display.string(from: date)
     }
 
-    private var process: Process?
-    private var inputPipe: Pipe?
-    private var outputPipe: Pipe?
-    private let lineBuffer = LineBuffer()
-    private var currentProjectDirectory: URL?
-    private var currentRun: PiRunRecord?
-
-    func loadRuns(projectDirectory: URL) {
-        let root = projectDirectory.appendingPathComponent("data/runs")
-        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
-            reviewRuns = []
-            return
-        }
-
-        var records: [PiRunRecord] = []
-        for case let url as URL in enumerator where url.lastPathComponent == "manifest.json" {
-            guard let data = try? Data(contentsOf: url),
-                  let record = try? JSONDecoder().decode(PiRunRecord.self, from: data),
-                  ["awaiting_human_review", "completed", "revision_requested", "failed"].contains(record.status) else { continue }
-            let directory = url.deletingLastPathComponent()
-            let reportURL = directory.appendingPathComponent("final.md")
-            guard let report = try? String(contentsOf: reportURL, encoding: .utf8),
-                  !report.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            records.append(normalizedReviewState(record, projectDirectory: projectDirectory))
-        }
-        reviewRuns = records.sorted { ($0.completedAt ?? $0.startedAt) > ($1.completedAt ?? $1.startedAt) }
-        if currentRun == nil, let latest = reviewRuns.first {
-            loadRun(latest, projectDirectory: projectDirectory)
-        }
-    }
-
-    private func normalizedReviewState(_ record: PiRunRecord, projectDirectory: URL) -> PiRunRecord {
-        let directory = projectDirectory.appendingPathComponent(record.relativeDirectory)
-        let checkpointDirectory = directory.appendingPathComponent("checkpoints")
-        guard let checkpointFiles = try? FileManager.default.contentsOfDirectory(
-            at: checkpointDirectory,
-            includingPropertiesForKeys: nil
-        ) else { return record }
-
-        let checkpointStatus = checkpointFiles
-            .sorted { $0.lastPathComponent > $1.lastPathComponent }
-            .compactMap { try? String(contentsOf: $0, encoding: .utf8) }
-            .flatMap { text in
-                text.components(separatedBy: .newlines).compactMap { line -> String? in
-                    guard line.hasPrefix("status:") else { return nil }
-                    return line.dropFirst("status:".count).trimmingCharacters(in: .whitespaces)
-                }
-            }
-            .first
-
-        let normalizedStatus: String?
-        switch checkpointStatus {
-        case "pending": normalizedStatus = "awaiting_human_review"
-        case "changes_requested": normalizedStatus = "revision_requested"
-        case "approved": normalizedStatus = "completed"
-        default: normalizedStatus = nil
-        }
-        guard let normalizedStatus, normalizedStatus != record.status else { return record }
-        return PiRunRecord(
-            id: record.id,
-            title: record.title,
-            workflow: record.workflow,
-            sourceDocument: record.sourceDocument,
-            startedAt: record.startedAt,
-            completedAt: normalizedStatus == "completed" ? (record.completedAt ?? record.startedAt) : nil,
-            status: normalizedStatus,
-            relativeDirectory: record.relativeDirectory
-        )
-    }
-
-    func loadRun(_ record: PiRunRecord, projectDirectory: URL) {
-        let directory = projectDirectory.appendingPathComponent(record.relativeDirectory)
-        output = (try? String(contentsOf: directory.appendingPathComponent("final.md"), encoding: .utf8)) ?? ""
-        thinkingOutput = (try? String(contentsOf: directory.appendingPathComponent("thinking.md"), encoding: .utf8)) ?? ""
-        traceOutput = (try? String(contentsOf: directory.appendingPathComponent("trace.md"), encoding: .utf8)) ?? ""
-        workflowTraceLines = traceOutput
-            .split(separator: "\n")
-            .map(String.init)
-            .filter { $0.hasPrefix("- ") }
-        runTitle = record.title
-        currentRun = record
-        currentWorkflow = record.workflow
-        currentProjectDirectory = projectDirectory
-        currentStatus = record.status
-        workflowFailed = record.status == "failed"
-        failureMessage = nil
-        status = switch record.status {
-        case "awaiting_human_review": "Awaiting human review"
-        case "revision_requested": "Changes requested"
-        case "completed": "Completed"
-        default: record.status.replacingOccurrences(of: "_", with: " ").capitalized
-        }
-        isRunning = false
-    }
-
-    func clearDisplayedRun() {
-        guard !isRunning else { return }
-        output = ""
-        thinkingOutput = ""
-        traceOutput = ""
-        workflowTraceLines = []
-        runTitle = ""
-        currentRun = nil
-        currentStatus = ""
-        workflowFailed = false
-        failureMessage = nil
-        status = "Ready"
-    }
-
-    func deleteRun(_ record: PiRunRecord, projectDirectory: URL) {
-        let runsRoot = projectDirectory.appendingPathComponent("data/runs").standardizedFileURL
-        let directory = projectDirectory.appendingPathComponent(record.relativeDirectory).standardizedFileURL
-        let rootPrefix = runsRoot.path.hasSuffix("/") ? runsRoot.path : runsRoot.path + "/"
-        guard directory.path.hasPrefix(rootPrefix),
-              directory.lastPathComponent == record.id,
-              FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path) else {
-            errorMessage = "Could not delete this review because its run directory could not be verified."
-            return
-        }
-
-        do {
-            try FileManager.default.removeItem(at: directory)
-            if currentRun?.id == record.id {
-                output = ""
-                thinkingOutput = ""
-                traceOutput = ""
-                workflowTraceLines = []
-                runTitle = ""
-                currentRun = nil
-                currentProjectDirectory = nil
-                currentStatus = ""
-                status = "Ready"
-                workflowFailed = false
-                failureMessage = nil
-            }
-            loadRuns(projectDirectory: projectDirectory)
-        } catch {
-            errorMessage = "Could not delete the review: \(error.localizedDescription)"
-        }
-    }
-
-    func start(prompt: String, projectDirectory: URL, model: String, runTitle: String, workflow: String, sourceDocument: String) {
-        stop()
-        output = ""
-        thinkingOutput = ""
-        traceOutput = ""
-        workflowTraceLines = []
-        workflowFailed = false
-        failureMessage = nil
-        self.runTitle = runTitle
-        currentWorkflow = workflow
-        currentProjectDirectory = projectDirectory
-        currentRun = createRun(projectDirectory: projectDirectory, title: runTitle, workflow: workflow, sourceDocument: sourceDocument)
-        currentStatus = "running"
-        status = "Starting Pi…"
-        isRunning = true
-
-        let process = Process()
-        let input = Pipe()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: Self.findPiExecutable())
-        process.arguments = [
-            "--mode", "rpc",
-            "--approve",
-            "--provider", "ollama",
-            "--model", model,
-            "--name", runTitle,
-            "--session-dir", ".pi/sessions"
-        ]
-        process.currentDirectoryURL = projectDirectory
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = output
-
-        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            self?.consume(data)
-        }
-
-        process.terminationHandler = { [weak self] process in
-            Task { @MainActor in
-                guard let self else { return }
-                self.isRunning = false
-                self.outputPipe?.fileHandleForReading.readabilityHandler = nil
-                if self.workflowFailed {
-                    self.status = "Workflow failed"
-                    self.persistCurrentRun(status: "failed")
-                    if self.output.isEmpty {
-                        self.errorMessage = self.failureMessage ?? "The contract-review workflow failed before returning a report."
-                    }
-                } else if process.terminationStatus != 0 {
-                    self.status = "Stopped"
-                    self.persistCurrentRun(status: "stopped")
-                    if self.output.isEmpty {
-                        self.errorMessage = "Pi stopped before returning a report. Check that Ollama is running and the selected model is available."
-                    }
-                } else if self.output.isEmpty {
-                    self.status = "Stopped"
-                    self.persistCurrentRun(status: "stopped")
-                    self.errorMessage = "Pi stopped before returning a report."
-                } else {
-                    self.status = "Complete"
-                }
-            }
-        }
-
-        do {
-            try process.run()
-            self.process = process
-            self.inputPipe = input
-            self.outputPipe = output
-            send(["type": "prompt", "message": prompt])
-            status = "Reviewing locally…"
-        } catch {
-            isRunning = false
-            status = "Unavailable"
-            errorMessage = "Could not start Pi: \(error.localizedDescription)"
-        }
-    }
-
-    func stop() {
-        outputPipe?.fileHandleForReading.readabilityHandler = nil
-        if let process, process.isRunning {
-            terminateDirectChildren(of: process.processIdentifier)
-            process.terminate()
-        }
-        process = nil
-        inputPipe = nil
-        outputPipe = nil
-        isRunning = false
-    }
-
-    private func terminateDirectChildren(of pid: Int32) {
-        let killer = Process()
-        killer.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        killer.arguments = ["-TERM", "-P", String(pid)]
-        try? killer.run()
-        killer.waitUntilExit()
-    }
-
-    private func send(_ command: [String: Any]) {
-        guard let inputPipe, JSONSerialization.isValidJSONObject(command) else { return }
-        do {
-            var data = try JSONSerialization.data(withJSONObject: command)
-            data.append(0x0A)
-            try inputPipe.fileHandleForWriting.write(contentsOf: data)
-        } catch {
-            errorMessage = "Could not send the request to Pi: \(error.localizedDescription)"
-        }
-    }
-
-    private nonisolated func consume(_ data: Data) {
-        let lines = lineBuffer.append(data)
-        for line in lines {
-            Task { @MainActor in
-                self.handle(line: line)
-            }
-        }
-    }
-
-    private func handle(line: Data) {
-        guard let event = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
-            return
-        }
-        guard let type = event["type"] as? String else { return }
-        switch type {
-        case "message_update":
-            if let assistantEvent = event["assistantMessageEvent"] as? [String: Any],
-               let assistantEventType = assistantEvent["type"] as? String {
-                if assistantEventType == "text_delta", let delta = assistantEvent["delta"] as? String {
-                    output.append(delta)
-                } else if assistantEventType == "thinking_delta", let delta = assistantEvent["delta"] as? String {
-                    thinkingOutput.append(delta)
-                }
-            }
-        case "tool_execution_start":
-            if let toolName = event["toolName"] as? String {
-                status = "Using \(toolName)…"
-                traceOutput.append("- Started `\(toolName)`\n")
-            }
-        case "tool_execution_end":
-            if let toolName = event["toolName"] as? String {
-                let failed = (event["isError"] as? Bool) == true
-                traceOutput.append("- Finished `\(toolName)`\(failed ? " — error" : "")\n")
-            }
-        case "extension_ui_request":
-            handleExtensionUIRequest(event)
-        case "agent_start":
-            traceOutput.append("- Agent started\n")
-        case "agent_settled":
-            isRunning = false
-            traceOutput.append("- Agent settled\n")
-            if workflowFailed {
-                status = "Workflow failed"
-                persistCurrentRun(status: "failed")
-            } else {
-                status = "Awaiting human review"
-                persistCurrentRun(status: "awaiting_human_review")
-            }
-        case "extension_error":
-            let detail = (event["error"] as? String) ?? (event["message"] as? String)
-            failureMessage = detail
-            workflowFailed = true
-            errorMessage = detail.map { "Pi extension error: \($0)" } ?? "Pi extension error. Check the project skills and extensions."
-        default:
-            break
-        }
-    }
-
-    private func handleExtensionUIRequest(_ event: [String: Any]) {
-        guard event["method"] as? String == "setWidget",
-              let widgetLines = event["widgetLines"] as? [String],
-              widgetLines.first == "ORCH_TRACE",
-              let payload = widgetLines.dropFirst().first,
-              let data = payload.data(using: .utf8),
-              let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-
-        if let lines = message["lines"] as? [String] {
-            workflowTraceLines = lines
-            traceOutput = lines.map { "- \($0)" }.joined(separator: "\n")
-        }
-        if let event = message["event"] as? [String: Any],
-           let eventType = event["type"] as? String {
-            if eventType == "node_failed" {
-                workflowFailed = true
-                failureMessage = (event["error"] as? String) ?? (event["message"] as? String) ?? "A workflow agent failed."
-            }
-            if eventType == "run_completed",
-               let runStatus = event["status"] as? String,
-               runStatus != "completed" {
-                workflowFailed = true
-                failureMessage = (event["error"] as? String) ?? (event["message"] as? String) ?? "The workflow failed."
-                isRunning = false
-                status = "Workflow failed"
-                persistCurrentRun(status: "failed")
-            }
-        }
-        if let statusText = message["status"] as? String, !statusText.isEmpty {
-            status = workflowFailed ? "Workflow failed" : statusText
-        }
-    }
-
-    private func createRun(projectDirectory: URL, title: String, workflow: String, sourceDocument: String) -> PiRunRecord? {
-        let nowDate = Date()
-        let now = ISO8601DateFormatter().string(from: nowDate)
-        let calendar = Calendar(identifier: .gregorian)
-        let year = String(calendar.component(.year, from: nowDate))
-        let month = String(format: "%02d", calendar.component(.month, from: nowDate))
-        let day = String(format: "%02d", calendar.component(.day, from: nowDate))
-        let timeSlug = now.replacingOccurrences(of: ":", with: "").replacingOccurrences(of: "-", with: "")
-        let id = "\(year)-\(month)-\(day)-\(timeSlug)-\(workflow)"
-        let relativeDirectory = "data/runs/\(year)/\(month)/\(year)-\(month)-\(day)/\(id)"
-        let directory = projectDirectory.appendingPathComponent(relativeDirectory)
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try sourceDocument.write(to: directory.appendingPathComponent("request.md"), atomically: true, encoding: .utf8)
-            let record = PiRunRecord(id: id, title: title, workflow: workflow, sourceDocument: sourceDocument, startedAt: now, completedAt: nil, status: "running", relativeDirectory: relativeDirectory)
-            try writeManifest(record, to: directory)
-            return record
-        } catch {
-            errorMessage = "Could not create the run record: \(error.localizedDescription)"
-            return nil
-        }
-    }
-
-    private func persistCurrentRun(status: String) {
-        guard let currentRun, let projectDirectory = currentProjectDirectory else { return }
-        let directory = projectDirectory.appendingPathComponent(currentRun.relativeDirectory)
-        let completedAt = status == "completed" ? ISO8601DateFormatter().string(from: Date()) : currentRun.completedAt
-        let updated = PiRunRecord(id: currentRun.id, title: currentRun.title, workflow: currentRun.workflow, sourceDocument: currentRun.sourceDocument, startedAt: currentRun.startedAt, completedAt: completedAt, status: status, relativeDirectory: currentRun.relativeDirectory)
-        do {
-            try finalMarkdown.write(to: directory.appendingPathComponent("final.md"), atomically: true, encoding: .utf8)
-            try thinkingOutput.write(to: directory.appendingPathComponent("thinking.md"), atomically: true, encoding: .utf8)
-            try traceOutput.write(to: directory.appendingPathComponent("trace.md"), atomically: true, encoding: .utf8)
-            if status == "awaiting_human_review" {
-                try writeCheckpoint(status: "pending", to: directory, comment: "Awaiting attorney review.")
-            }
-            try writeManifest(updated, to: directory)
-            self.currentRun = updated
-            currentStatus = status
-            loadRuns(projectDirectory: projectDirectory)
-        } catch {
-            errorMessage = "Could not save the run record: \(error.localizedDescription)"
-        }
-    }
-
-    private func writeManifest(_ record: PiRunRecord, to directory: URL) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(record).write(to: directory.appendingPathComponent("manifest.json"), options: .atomic)
-    }
-
-    func approveCurrentRun(comment: String = "") {
-        let note = comment.trimmingCharacters(in: .whitespacesAndNewlines)
-        let full = note.isEmpty ? "Approved by human reviewer." : "Approved by human reviewer. \(note)"
-        transitionCurrentRun(to: "completed", checkpointStatus: "approved", comment: full)
-    }
-
-    func requestChangesForCurrentRun(comment: String = "") {
-        let note = comment.trimmingCharacters(in: .whitespacesAndNewlines)
-        let full = note.isEmpty ? "Changes requested by human reviewer." : "Changes requested by human reviewer. \(note)"
-        transitionCurrentRun(to: "revision_requested", checkpointStatus: "changes_requested", comment: full)
-    }
-
-    private func transitionCurrentRun(to status: String, checkpointStatus: String, comment: String) {
-        guard let currentRun, let projectDirectory = currentProjectDirectory else { return }
-        let directory = projectDirectory.appendingPathComponent(currentRun.relativeDirectory)
-        let completedAt = status == "completed" ? ISO8601DateFormatter().string(from: Date()) : nil
-        let updated = PiRunRecord(id: currentRun.id, title: currentRun.title, workflow: currentRun.workflow, sourceDocument: currentRun.sourceDocument, startedAt: currentRun.startedAt, completedAt: completedAt, status: status, relativeDirectory: currentRun.relativeDirectory)
-        do {
-            try writeCheckpoint(status: checkpointStatus, to: directory, comment: comment)
-            try writeManifest(updated, to: directory)
-            self.currentRun = updated
-            currentStatus = status
-            self.status = status == "completed" ? "Completed" : "Changes requested"
-            loadRuns(projectDirectory: projectDirectory)
-        } catch {
-            errorMessage = "Could not save the human-review decision: \(error.localizedDescription)"
-        }
-    }
-
-    private func writeCheckpoint(status: String, to directory: URL, comment: String) throws {
-        let checkpoints = directory.appendingPathComponent("checkpoints")
-        try FileManager.default.createDirectory(at: checkpoints, withIntermediateDirectories: true)
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let workflowId = currentRun?.workflow ?? currentWorkflow
-        let escaped = comment.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\"", with: "'")
-        let yaml = """
-        status: \(status)
-        type: attorney_review
-        workflow: \(workflowId)
-        updated_at: \(timestamp)
-        comment: "\(escaped)"
-        """
-        try yaml.write(to: checkpoints.appendingPathComponent("01-attorney-review.yaml"), atomically: true, encoding: .utf8)
-    }
-
-    private static func findPiExecutable() -> String {
-        if let configured = ProcessInfo.processInfo.environment["PI_PATH"],
-           FileManager.default.isExecutableFile(atPath: configured) {
-            return configured
-        }
-
-        let candidates = [
-            "/opt/homebrew/bin/pi",
-            "/usr/local/bin/pi",
-            "/Users/golfergeek/.nvm/versions/node/v22.22.3/bin/pi"
-        ]
-        if let match = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            return match
-        }
-        return "/usr/bin/env"
-    }
-
-    private final class LineBuffer: @unchecked Sendable {
-        private var data = Data()
-        private let lock = NSLock()
-
-        func append(_ incoming: Data) -> [Data] {
-            lock.lock()
-            defer { lock.unlock() }
-
-            data.append(incoming)
-            var lines: [Data] = []
-            while let newline = data.firstIndex(of: 0x0A) {
-                lines.append(Data(data[..<newline]))
-                data.removeSubrange(...newline)
-            }
-            return lines
-        }
+    private static func parseDate(_ value: String) -> Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return withFraction.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 }

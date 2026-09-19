@@ -1,0 +1,141 @@
+name: compliance-audit
+description: Audit a policy document against GDPR, HIPAA, and/or SOX using the actual framework text. Sections are classified, each is evaluated against the framework folder, findings roll up into scorecards and a remediation plan, and counsel reviews before the report is final.
+trigger: when the user asks to audit a policy for regulatory compliance
+params:
+  - { name: target, required: true, description: "Path to the policy document" }
+  - { name: frameworks, default: "GDPR", description: "GDPR | HIPAA | SOX | GDPR + HIPAA | GDPR + SOX | HIPAA + SOX | GDPR + HIPAA + SOX" }
+  - { name: context, default: "Assess this policy for compliance gaps and produce a prioritized remediation plan.", description: Objective }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: policy classifier → map(sections ∥2) evaluator against knowledge/frameworks/<framework>
+  → scorer → attorney gate (approve or send back findings with feedback) → report.
+  Ported from orchestratorai-local `legal/workflows/compliance-audit`. Framework text lives in
+  knowledge/frameworks (copied from Local's framework-sources) and is the only authority evaluators cite.
+
+  ```orchestrator-launch
+  title: Compliance Audit
+  icon: checkmark.shield
+  group: compliance-risk
+  file: { label: policy document, param: target }
+  fields:
+    - { param: frameworks, label: Frameworks, kind: choice, options: [GDPR, HIPAA, SOX, GDPR + HIPAA, GDPR + SOX, HIPAA + SOX, GDPR + HIPAA + SOX] }
+    - { param: context, label: Objective, kind: text }
+  samples:
+    - { title: Data handling policy (synthetic), path: fixtures/compliance/data-handling-policy.md }
+  review:
+    focusTitle: Compliance review focus
+    focusSubtitle: Work the critical and high findings before approving. Every finding is traceable to a section and a framework requirement.
+    blurb: Confirm findings, scores, and remediation priorities. Recording Approve or Request changes completes the review checkpoint — not legal advice.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: policy-classifier
+      label: classifier
+      task: |-
+        Read the complete policy at {params.target} and segment it into sections.
+        Use the document's own headings as sections (one per heading; merge only trivial ones). Ids must be
+        SEC-1, SEC-2, … in document order; title is the heading text; domain must be exactly one of
+        data-handling, security, privacy, breach-notification, employee-rights, governance,
+        financial-controls, risk-management, general. Do not add analysis or meta sections.
+        Objective: {params.context}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      json:
+        type: object
+        required: [sections]
+        properties:
+          sections:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              required: [id, title, domain, summary]
+              properties:
+                id: { type: string }
+                title: { type: string }
+                domain: { type: string }
+                summary: { type: string }
+              additionalProperties: false
+        additionalProperties: false
+      as: policy
+
+    - kind: map
+      label: evaluate
+      over: "{policy.sections}"
+      concurrency: 2
+      body:
+        kind: agent
+        profile: compliance-evaluator
+        label: evaluator
+        task: |-
+          Evaluate section {item.id} — "{item.title}" (domain: {item.domain}) of the policy at {params.target}
+          against these frameworks: {params.frameworks}.
+          Read the section's text from the policy file. Framework text: search under knowledge/frameworks
+          (gdpr/, hipaa/, sox/ — use only the folders for the frameworks named above).
+          Section summary: {item.summary}
+          Objective: {params.context}
+
+          Return Markdown headed `## {item.id} — {item.title}` with one `### Requirement …` block per requirement
+          evaluated (status, severity, requirement ref + quote, policy excerpt, gap, remediation).
+
+          Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: findings
+
+    - kind: agent
+      profile: compliance-scorer
+      label: scorer
+      task: |-
+        Aggregate the findings for {params.target} against {params.frameworks}.
+
+        SECTIONS:
+        {policy.sections}
+
+        FINDINGS:
+        {findings}
+
+        Return Markdown with ## Scorecard (overall, per domain, per framework, severity counts),
+        ## Findings register (every finding, traceable), ## Remediation plan (prioritized, numbered R1…).
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: scorecard
+
+    - kind: agent
+      profile: attorney-gate
+      label: attorney-gate
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Compliance findings ready for review"
+        - summary: the complete SCORECARD text below, unchanged, preceded by one line:
+          "Approve to finalize, or request changes and say which findings to revisit and why."
+        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+
+        SCORECARD:
+        {scorecard}
+      as: gate
+
+    - kind: agent
+      profile: compliance-report-writer
+      label: report
+      task: |-
+        Write the final compliance audit report for {params.target} against {params.frameworks}.
+        Objective: {params.context}
+        The first line must be exactly:
+        # Compliance audit — [short document name]
+        Then: ## Executive summary, ## Attorney review focus, ## Scorecard, ## Findings, ## Remediation plan,
+        ## Reviewer decision, ## Limitations.
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY — issue; action` mapping
+        critical→HIGH, high→HIGH, medium→MEDIUM, low→LOW. Prefer 5–10 items; lead with HIGH.
+        If the reviewer requested changes, address the COMMENT explicitly in the affected findings.
+
+        REVIEWER DECISION:
+        {gate}
+
+        SCORECARD AND FINDINGS:
+        {scorecard}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report
+display: report

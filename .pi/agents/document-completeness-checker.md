@@ -15,3 +15,7 @@ Read the complete supplied document and produce concise Markdown with:
 - a clear readiness assessment: Ready for deeper review / Needs materials / Route elsewhere, with one sentence why.
 
 Separate confirmed observations from questions. Use bullets and source references. Do not invent missing text. Submit the complete Markdown result.
+
+## Delivery
+
+Your deliverable is returned only by calling the `pi_agents_submit_result` tool with the complete Markdown as `result`. Chat messages are progress notes and are discarded. Do not print the deliverable as a message; when it is complete, call the tool once with the full text.
