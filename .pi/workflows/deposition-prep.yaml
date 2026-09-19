@@ -1,0 +1,152 @@
+name: deposition-prep
+description: Prepare for a deposition from witness details and case facts. Produces a preparation outline with themes, predicted questions, vulnerabilities and an exhibit plan - or switches to predicted-cross-exam mode for opposing counsel's likely attack lines with answer coaching.
+trigger: when the user asks to prepare for a deposition or to predict cross-examination of a witness
+params:
+  - { name: witness, required: true, description: "Witness name and type (corporate officer, expert, fact witness)" }
+  - { name: case_facts, required: true, description: "Case facts and posture" }
+  - { name: topics, default: "Not specified", description: "Deposition topics to cover" }
+  - { name: mode, default: "Preparation outline", description: "Preparation outline | Predicted cross-exam" }
+  - { name: knowledge_dir, default: "matters", description: "Folder searched for the matter record" }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: case analyst -> switch(mode) { outline: questions -> research -> outline writer |
+  cross-exam: opposing counsel -> predicted cross -> answer coaching } -> report.
+  Ported from orchestratorai-local `legal/workflows/deposition-prep`.
+
+  ```orchestrator-launch
+  title: Deposition Prep
+  icon: person.wave.2
+  group: litigation
+  file: { kind: none }
+  fields:
+    - { param: witness, label: Witness, kind: line, default: "Dana Ruiz - VP Engineering, Aspen Devices (corporate officer)" }
+    - { param: case_facts, label: Case facts, kind: text, default: "Harbor Peak alleges Aspen used its data-pipeline architecture after an NDA evaluation. Aspen says its engineers relied only on residuals retained in memory. No documents were copied." }
+    - { param: topics, label: Topics, kind: text, default: "NDA evaluation meetings; what engineers retained; the product timeline; the residuals clause." }
+    - { param: mode, label: Mode, kind: choice, options: [Preparation outline, Predicted cross-exam] }
+    - { param: knowledge_dir, label: Knowledge folder, kind: line }
+  review:
+    focusTitle: Attorney review focus
+    focusSubtitle: Predicted questions are preparation aids. Verify every fact against the record before the deposition.
+    blurb: Confirm the preparation plan before working with the witness. Recording Approve or Request changes completes the attorney-review checkpoint.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: depo-case-analyst
+      label: case-analyst
+      task: |-
+        Map the strategic landscape for this deposition.
+        Witness: {params.witness}
+        Case facts: {params.case_facts}
+        Deposition topics: {params.topics}
+        Matter record to search with find/grep/read (may be empty): {params.knowledge_dir}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: landscape
+
+    - kind: switch
+      label: mode
+      on: "{params.mode}"
+      cases:
+        - when: { eq: ["", "Predicted cross-exam"] }
+          then:
+            kind: sequence
+            steps:
+              - kind: agent
+                profile: depo-opposing-counsel
+                label: opposing-counsel
+                task: |-
+                  Find the attack lines against our witness.
+                  Witness: {params.witness}
+                  Case facts: {params.case_facts}
+
+                  STRATEGIC LANDSCAPE:
+                  {landscape}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+                as: attack
+              - kind: agent
+                profile: depo-cross-exam-generator
+                label: cross-exam-generator
+                task: |-
+                  Generate the predicted cross-examination for this witness.
+                  Witness: {params.witness}
+                  Case facts: {params.case_facts}
+
+                  ATTACK LINES:
+                  {attack}
+
+                  STRATEGIC LANDSCAPE:
+                  {landscape}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+                as: questions
+              - kind: agent
+                profile: depo-answer-coach
+                label: answer-coach
+                task: |-
+                  Coach the witness on the predicted cross-examination below.
+                  Witness: {params.witness}
+                  Case facts: {params.case_facts}
+
+                  PREDICTED CROSS-EXAMINATION:
+                  {questions}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      else:
+        kind: sequence
+        steps:
+          - kind: agent
+            profile: depo-question-generator
+            label: question-generator
+            task: |-
+              Build the deposition question outline.
+              Witness: {params.witness}
+              Topics: {params.topics}
+
+              STRATEGIC LANDSCAPE:
+              {landscape}
+
+              Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            as: questions
+          - kind: agent
+            profile: depo-researcher
+            label: researcher
+            task: |-
+              Research the deposition themes against the matter record.
+              Knowledge folder to search with find/grep/read: {params.knowledge_dir}
+              Case facts: {params.case_facts}
+
+              STRATEGIC LANDSCAPE:
+              {landscape}
+
+              Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: workstream
+
+    - kind: agent
+      profile: depo-prep-writer
+      label: report
+      task: |-
+        Write the final deposition preparation package for {params.witness}.
+        Mode: {params.mode}
+
+        The first line must be exactly:
+        # Deposition prep - [witness name]
+        Then: ## Executive summary, ## Attorney review focus, ## Themes, ## Questions,
+        ## Vulnerabilities, ## Exhibit plan, ## Limitations.
+        In Predicted cross-exam mode, title the questions section "## Predicted cross-examination" and add
+        "## Answer coaching" after it.
+
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`
+        (HIGH/MEDIUM/LOW), covering every fact that must be verified against the record and every
+        vulnerability to work with the witness. Prefer 4-8 items; lead with HIGH.
+
+        STRATEGIC LANDSCAPE:
+        {landscape}
+
+        WORKSTREAM OUTPUT:
+        {workstream}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report

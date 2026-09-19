@@ -1,0 +1,171 @@
+name: deal-memo
+description: Turn a completed diligence record into a partner-ready M&A deal memo. Five specialist drafters write the core sections against the diligence findings, the memo is assembled with a references appendix, and the partner approves or sends back one revision.
+trigger: when the user asks to draft a deal memo from diligence findings
+params:
+  - { name: target, required: true, description: "Path to the completed diligence report or record" }
+  - { name: transaction, default: "Proposed acquisition of the target company; buyer-side memo.", description: "Transaction and structure" }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: intake -> 5 section drafters in parallel (reps & warranties, indemnification, disclosure
+  schedules, conditions precedent, covenants) -> synthesis -> **gate** -> finalize.
+  Ported from orchestratorai-local `legal/workflows/deal-memo`. Local validates citation ids against a
+  registry and retries; here the drafters are instructed to cite only ids present in the record and the
+  synthesizer flags any citation it cannot find.
+
+  ```orchestrator-launch
+  title: Deal Memo
+  icon: doc.richtext
+  group: transactional
+  file: { label: diligence report, param: target }
+  fields:
+    - { param: transaction, label: Transaction, kind: text }
+  samples:
+    - { title: Cedar Analytics diligence record (synthetic), path: fixtures/dealroom-diligence-record.md }
+  review:
+    focusTitle: Partner review focus
+    focusSubtitle: Check that every citation resolves to a real diligence finding before the memo circulates.
+    blurb: Approve the memo to finalize it, or request changes for one re-draft. Recording a decision completes the review checkpoint - not a legal opinion.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: deal-memo-drafter
+      label: intake
+      task: |-
+        Read the diligence record at {params.target} completely and produce the drafting context the
+        section drafters will work from: the transaction as the record describes it, the finding ids
+        (`R-n`) and document names that are valid to cite, the deal-breakers, and the open items.
+        Do not draft any memo section yet.
+        Transaction: {params.transaction}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: record
+
+    - kind: parallel
+      label: sections
+      onError: collect
+      concurrency: 2
+      branches:
+              reps:
+                kind: agent
+                profile: deal-memo-drafter
+                label: reps-warranties
+                task: |-
+                  Draft the **Representations and Warranties** section of the deal memo.
+                  Transaction: {params.transaction}
+                  Cover the reps the buyer should require given the diligence findings, the ones the record shows the seller cannot give, and survival periods.
+
+                  DILIGENCE RECORD (the only source you may cite):
+                  {record}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+              indemnity:
+                kind: agent
+                profile: deal-memo-drafter
+                label: indemnification
+                task: |-
+                  Draft the **Indemnification** section of the deal memo.
+                  Transaction: {params.transaction}
+                  Cover indemnity scope, caps, baskets, escrow or holdback sizing, and the specific indemnities the diligence findings justify.
+
+                  DILIGENCE RECORD (the only source you may cite):
+                  {record}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+              schedules:
+                kind: agent
+                profile: deal-memo-drafter
+                label: disclosure-schedules
+                task: |-
+                  Draft the **Disclosure Schedules** section of the deal memo.
+                  Transaction: {params.transaction}
+                  Cover what the seller must disclose, the schedules the findings imply, and any exceptions the record already reveals.
+
+                  DILIGENCE RECORD (the only source you may cite):
+                  {record}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+              conditions:
+                kind: agent
+                profile: deal-memo-drafter
+                label: conditions-precedent
+                task: |-
+                  Draft the **Conditions Precedent** section of the deal memo.
+                  Transaction: {params.transaction}
+                  Cover closing conditions, consents and approvals the findings require (change of control, assignment, regulatory), and what must be cleared pre-signing.
+
+                  DILIGENCE RECORD (the only source you may cite):
+                  {record}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+              covenants:
+                kind: agent
+                profile: deal-memo-drafter
+                label: covenants
+                task: |-
+                  Draft the **Covenants** section of the deal memo.
+                  Transaction: {params.transaction}
+                  Cover interim operating covenants, non-competes and non-solicits, and post-closing covenants the findings justify.
+
+                  DILIGENCE RECORD (the only source you may cite):
+                  {record}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: drafts
+
+    - kind: agent
+      profile: deal-memo-synthesizer
+      label: synthesis
+      task: |-
+        Assemble the deal memo.
+        Transaction: {params.transaction}
+        Source record: {params.target}
+
+        DRAFTING CONTEXT (the valid citation ids are listed here):
+        {record}
+
+        SECTION DRAFTS:
+        {drafts}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: memo
+
+    - kind: agent
+      profile: attorney-gate
+      label: attorney-gate
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Deal memo ready for partner review"
+        - summary: the complete MEMO below, unchanged, preceded by one line:
+          "Approve to finalize, or request changes with the revisions for one re-draft."
+        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+
+        MEMO:
+        {memo}
+      as: gate
+
+    - kind: agent
+      profile: deal-memo-finalizer
+      label: report
+      task: |-
+        Produce the final deal memo.
+
+        The first line must be exactly:
+        # Deal memo - [transaction name]
+        Keep the memo's sections, then append: ## Attorney review focus, ## References, ## Change log,
+        ## Limitations.
+
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`: every
+        unresolved deal-breaker is HIGH, every citation the synthesis could not validate is HIGH, open
+        items are MEDIUM. Prefer 4-8 items.
+
+        PARTNER DECISION:
+        {gate}
+
+        MEMO:
+        {memo}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report

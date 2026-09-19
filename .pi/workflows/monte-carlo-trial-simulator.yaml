@@ -1,0 +1,177 @@
+name: monte-carlo-trial-simulator
+description: Run a structured case record through repeated simulated mini-trials. Each simulation draws a different jury, judge, evidence-admission and witness-credibility profile, adversarial counsel argue both sides, a jury returns a verdict, and the outcomes are aggregated into a distribution, settlement band and sensitivity analysis.
+trigger: when the user asks to simulate trial outcomes or estimate a settlement range from a case record
+params:
+  - { name: target, required: true, description: "Path to the structured case record" }
+  - { name: simulations, default: "4", description: "How many simulated trials to run" }
+  - { name: context, default: "Estimate the outcome distribution and a settlement band for case evaluation.", description: Objective }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: parameter designer -> map(simulations) { plaintiff counsel and defence counsel in parallel
+  -> jury verdict } -> statistician -> report.
+  Ported from orchestratorai-local `legal/workflows/monte-carlo-trial-simulator`. Local runs up to 200
+  simulations; on local hardware each mini-trial is three agent calls, so the default here is 4 and the
+  report states the sample size honestly. Every output carries a standing simulation disclaimer.
+
+  ```orchestrator-launch
+  title: Trial Simulator
+  icon: chart.line.uptrend.xyaxis
+  group: litigation
+  file: { label: case record, param: target }
+  fields:
+    - { param: simulations, label: Simulations, kind: choice, options: ["3", "4", "6", "8"] }
+    - { param: context, label: Objective, kind: text }
+  samples:
+    - { title: Harbor Peak v. Aspen case record (synthetic), path: fixtures/litigation/case-record.md }
+  review:
+    focusTitle: Attorney review focus
+    focusSubtitle: Simulated outcomes from a small sample. Treat the range as indicative and check the sensitivity factors.
+    blurb: Confirm the assumptions behind the distribution before using it in case evaluation. These are simulated outcomes, not a prediction and not legal advice.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: trial-parameter-designer
+      label: parameters
+      task: |-
+        Read the case record at {params.target} completely, then design exactly {params.simulations}
+        stratified parameter sets for simulated trials.
+        Objective: {params.context}
+
+        Each entry needs: id (SIM-n), jury (composition and leanings), judge (profile and evidentiary
+        posture), evidence (which contested items are admitted and which excluded, by name from the
+        record), and witnesses (credibility modifiers by name).
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      json:
+        type: object
+        required: [simulations]
+        properties:
+          simulations:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              required: [id, jury, judge, evidence, witnesses]
+              properties:
+                id: { type: string }
+                jury: { type: string }
+                judge: { type: string }
+                evidence: { type: string }
+                witnesses: { type: string }
+              additionalProperties: false
+        additionalProperties: false
+      as: space
+
+    - kind: map
+      label: simulate
+      over: "{space.simulations}"
+      concurrency: 1
+      body:
+        kind: sequence
+        steps:
+          - kind: parallel
+            label: argument
+            onError: collect
+            branches:
+              plaintiff:
+                kind: agent
+                profile: trial-advocate
+                label: plaintiff-counsel
+                task: |-
+                  You are PLAINTIFF's counsel in simulation {item.id}.
+                  Case record: {params.target} (read it).
+                  Jury: {item.jury}
+                  Judge: {item.judge}
+                  Evidence admitted/excluded in this simulation: {item.evidence}
+                  Witness credibility in this simulation: {item.witnesses}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+              defense:
+                kind: agent
+                profile: trial-advocate
+                label: defense-counsel
+                task: |-
+                  You are DEFENCE counsel in simulation {item.id}.
+                  Case record: {params.target} (read it).
+                  Jury: {item.jury}
+                  Judge: {item.judge}
+                  Evidence admitted/excluded in this simulation: {item.evidence}
+                  Witness credibility in this simulation: {item.witnesses}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            as: args
+          - kind: agent
+            profile: trial-jury
+            label: jury
+            task: |-
+              Deliberate and return the verdict for simulation {item.id}.
+              Jury composition: {item.jury}
+              Judge: {item.judge}
+              Evidence admitted/excluded: {item.evidence}
+              Witness credibility: {item.witnesses}
+
+              PLAINTIFF CASE:
+              {args.plaintiff}
+
+              DEFENCE CASE:
+              {args.defense}
+
+              Return JSON with simulationId ("{item.id}"), verdict, damages (a number, 0 for a defence
+              verdict), keyFactors (2-4 short strings), and reasoning.
+
+              Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            json:
+              type: object
+              required: [simulationId, verdict, damages, keyFactors, reasoning]
+              properties:
+                simulationId: { type: string }
+                verdict: { type: string }
+                damages: { type: number }
+                keyFactors: { type: array, items: { type: string } }
+                reasoning: { type: string }
+              additionalProperties: false
+      as: verdicts
+
+    - kind: agent
+      profile: trial-statistician
+      label: statistics
+      task: |-
+        Aggregate the simulated outcomes. Sample size: {params.simulations}.
+        Objective: {params.context}
+
+        PARAMETER SETS:
+        {space.simulations}
+
+        VERDICTS:
+        {verdicts}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: stats
+
+    - kind: agent
+      profile: trial-report-writer
+      label: report
+      task: |-
+        Write the trial simulation report for the case record at {params.target}.
+        Sample size: {params.simulations} simulations.
+
+        The first line must be exactly:
+        # Trial simulation - [case name]
+        Then: ## Disclaimer, ## Executive summary, ## Attorney review focus, ## Outcome distribution,
+        ## Damages distribution, ## Settlement range, ## Sensitivity analysis, ## Strategy recommendations,
+        ## Simulation log, ## Limitations. Repeat the disclaimer at the end.
+
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`: any
+        assumption the distribution is sensitive to is HIGH, small-sample caveats are MEDIUM.
+        Prefer 4-8 items.
+
+        STATISTICS:
+        {stats}
+
+        VERDICTS:
+        {verdicts}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report

@@ -1,0 +1,192 @@
+name: discovery-review
+description: Review a discovery corpus. Every document is coded for relevance, privilege, issue tags and hot-document status, sorted into review batches, and taken through four separate attorney gates - privilege first, with no bulk approval - before a production set and privilege log are produced.
+trigger: when the user asks to review, code, or produce a discovery document set
+params:
+  - { name: target, required: true, description: "Folder holding the discovery corpus" }
+  - { name: matter, default: "Harbor Peak Systems v. Aspen Devices", description: "Matter name" }
+  - { name: relevance_criteria, default: "Anything bearing on the NDA evaluation, the data-pipeline architecture, or the product timeline.", description: "What makes a document relevant" }
+  - { name: privilege_holders, default: "In-house counsel and outside counsel for the producing party", description: "Privilege holders to watch for" }
+  - { name: issue_tags, default: "nda-evaluation, architecture, timeline, damages", description: "Issue tags available to the coder" }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: inventory -> map(documents, 2 at a time) coder -> batcher -> **gate 1 privilege**
+  (mandatory, no bulk approve) -> **gate 2 relevance** -> **gate 3 hot documents** -> **gate 4 QA sample**
+  -> production set + privilege log + calibration.
+  Ported from orchestratorai-local `legal/workflows/discovery-review`, including its 0.95 privilege
+  threshold and its rule that privilege review is never bulk-approved.
+
+  ```orchestrator-launch
+  title: Discovery Review
+  icon: tray.full
+  group: litigation
+  file: { kind: folder, label: discovery corpus folder, param: target }
+  fields:
+    - { param: matter, label: Matter, kind: line }
+    - { param: relevance_criteria, label: Relevance, kind: text }
+    - { param: privilege_holders, label: Privilege holders, kind: line }
+    - { param: issue_tags, label: Issue tags, kind: line }
+  samples:
+    - { title: Harbor Peak corpus (synthetic), path: fixtures/discovery }
+  review:
+    focusTitle: Attorney review focus
+    focusSubtitle: Privilege calls are the ones that cannot be wrong. Work those first; the log is built from them.
+    blurb: Confirm the coding, the production set, and the privilege log before anything leaves your control. Recording Approve or Request changes completes the attorney-review checkpoint.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: document-inventory
+      label: inventory
+      task: |-
+        Inventory every readable document in the folder {params.target}.
+        Use ls and find to enumerate it, then read enough of each file to classify it.
+        Each `path` must be the exact path a read tool can open (include the folder prefix).
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      json:
+        type: object
+        required: [documents]
+        properties:
+          documents:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              required: [path, name, type, summary]
+              properties:
+                path: { type: string, minLength: 1 }
+                name: { type: string }
+                type: { type: string }
+                summary: { type: string }
+              additionalProperties: false
+          note: { type: string }
+        additionalProperties: false
+      as: inventory
+
+    - kind: map
+      label: code
+      over: "{inventory.documents}"
+      concurrency: 2
+      body:
+        kind: agent
+        profile: discovery-coder
+        label: coder
+        task: |-
+          Code discovery document {index}: {item.name} (type: {item.type})
+          Path to read: {item.path}
+
+          REVIEW PROTOCOL
+          Matter: {params.matter}
+          Relevance criteria: {params.relevance_criteria}
+          Privilege holders: {params.privilege_holders}
+          Issue tags available: {params.issue_tags}
+
+          Head your output `## {item.name}` and include the path.
+
+          Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: coded
+
+    - kind: agent
+      profile: discovery-batcher
+      label: batcher
+      task: |-
+        Sort the coded corpus into the four review batches.
+        Matter: {params.matter}
+
+        CODED DOCUMENTS:
+        {coded}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: batches
+
+    - kind: agent
+      profile: attorney-gate
+      label: gate-1-privilege
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Gate 1 - privilege review (mandatory, no bulk approve)"
+        - summary: the PRIVILEGE BATCH section of the batches below, in full, preceded by these two lines:
+          "Every potentially privileged document must be reviewed individually. Approve the coding, or request changes and correct specific documents."
+          "A missed privileged document is a waiver."
+        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+
+        BATCHES:
+        {batches}
+      as: gate_privilege
+
+    - kind: agent
+      profile: attorney-gate
+      label: gate-2-relevance
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Gate 2 - relevance review (low-confidence calls)"
+        - summary: the RELEVANCE BATCH section of the batches below, preceded by one line:
+          "Bulk approval is allowed at this gate. Approve, or request changes and name the documents to recode."
+        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+
+        BATCHES:
+        {batches}
+      as: gate_relevance
+
+    - kind: agent
+      profile: attorney-gate
+      label: gate-3-hot-docs
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Gate 3 - hot document review"
+        - summary: the HOT DOCUMENTS BATCH section of the batches below, preceded by one line:
+          "Approve, or request changes to flag any of these for senior attorney review."
+        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+
+        BATCHES:
+        {batches}
+      as: gate_hot
+
+    - kind: agent
+      profile: attorney-gate
+      label: gate-4-qa-sample
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Gate 4 - QA sample and calibration"
+        - summary: the QA SAMPLE section of the batches below, preceded by one line:
+          "Corrections here feed the calibration check. Approve, or request changes with the corrections."
+        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+
+        BATCHES:
+        {batches}
+      as: gate_qa
+
+    - kind: agent
+      profile: discovery-production-writer
+      label: report
+      task: |-
+        Produce the final discovery review output for {params.matter}.
+
+        The first line must be exactly:
+        # Discovery review - [matter name]
+        Then: ## Executive summary, ## Attorney review focus, ## Review statistics, ## Production set,
+        ## Privilege log, ## Calibration, ## Gate decisions, ## Limitations.
+
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`. Any document
+        still coded potentially-privileged after gate 1 is HIGH. Prefer 4-10 items.
+        Apply every correction the gate decisions recorded before computing the production set and log.
+
+        GATE DECISIONS
+        Privilege: {gate_privilege}
+        Relevance: {gate_relevance}
+        Hot documents: {gate_hot}
+        QA sample: {gate_qa}
+
+        BATCHES:
+        {batches}
+
+        CODED DOCUMENTS:
+        {coded}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report

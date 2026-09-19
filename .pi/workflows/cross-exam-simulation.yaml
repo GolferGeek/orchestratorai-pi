@@ -1,0 +1,158 @@
+name: cross-exam-simulation
+description: Put a witness through an adaptive cross-examination. The simulator asks one question at a time and waits for the witness's answer, scores each answer on evasion, consistency and damage, adapts the next question, and produces a debrief with the weakest moments and coaching.
+trigger: when the user asks to simulate or practise a cross-examination
+params:
+  - { name: witness, required: true, description: "Witness name, role, and background" }
+  - { name: case_facts, required: true, description: "Case facts and posture" }
+  - { name: focus, default: "No particular focus - follow the strategy", description: "Optional focus area" }
+  - { name: knowledge_dir, default: "matters", description: "Folder searched for prior statements and documents" }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: strategist -> loop(max 5) { question -> attorney gate (you answer as the witness) ->
+  scorer } until the answer says stop -> debriefer.
+  Ported from orchestratorai-local `legal/workflows/cross-exam-simulation`. The interactive turn loop uses
+  the same `attorney_review` gate as every other HITL point: the question appears in the console and your
+  typed answer becomes the witness's testimony for that turn. Type "end simulation" to stop early.
+
+  ```orchestrator-launch
+  title: Cross-Exam Simulation
+  icon: person.2.wave.2
+  group: litigation
+  file: { kind: none }
+  fields:
+    - { param: witness, label: Witness, kind: line, default: "Dana Ruiz - VP Engineering, Aspen Devices" }
+    - { param: case_facts, label: Case facts, kind: text, default: "Harbor Peak alleges Aspen used its data-pipeline architecture after an NDA evaluation. Aspen says its engineers relied only on residuals retained in memory." }
+    - { param: focus, label: Focus area, kind: line }
+    - { param: knowledge_dir, label: Knowledge folder, kind: line }
+  review:
+    focusTitle: Coaching focus
+    focusSubtitle: Work the weakest moments with the witness. Answer each question in the gate note as the witness would.
+    blurb: Review the transcript, scores, and coaching before the real deposition. Recording Approve or Request changes completes the attorney-review checkpoint.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: xexam-strategist
+      label: strategist
+      task: |-
+        Build the cross-examination strategy.
+        Witness: {params.witness}
+        Case facts: {params.case_facts}
+        Focus area: {params.focus}
+        Prior statements and documents to search with find/grep/read (may be empty): {params.knowledge_dir}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: strategy
+
+    - kind: loop
+      label: examination
+      max: 5
+      body:
+        kind: sequence
+        steps:
+          - kind: agent
+            profile: xexam-question-generator
+            label: question
+            task: |-
+              Ask the next cross-examination question.
+              Witness: {params.witness}
+              Case facts: {params.case_facts}
+
+              STRATEGY:
+              {strategy}
+
+              TRANSCRIPT SO FAR (empty on the first question):
+              {last}
+
+              Return JSON with question (the exact question text), topic, and move
+              (follow-up | new-topic | confront-document | impeach).
+
+              Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            json:
+              type: object
+              required: [question, topic, move]
+              properties:
+                question: { type: string, minLength: 1 }
+                topic: { type: string }
+                move: { type: string }
+              additionalProperties: false
+            as: q
+
+          - kind: agent
+            profile: attorney-gate
+            label: witness-answer
+            task: |-
+              Call the attorney_review tool exactly once with:
+              - run_id: "{params.run_id}"
+              - title: "Cross-examination - answer as the witness"
+              - summary: exactly these lines:
+                "**Q ({q.move}, {q.topic}):** {q.question}"
+                ""
+                "Answer as the witness would in the note below, then Approve to continue. Type \"end simulation\" to stop."
+              Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+            as: answer
+
+          - kind: agent
+            profile: xexam-answer-scorer
+            label: scorer
+            task: |-
+              Score the witness's answer to this turn.
+              Witness: {params.witness}
+              Case facts: {params.case_facts}
+
+              QUESTION: {q.question}   (topic: {q.topic}, move: {q.move})
+
+              WITNESS ANSWER (the COMMENT text below is the answer; ignore the DECISION line):
+              {answer}
+
+              TRANSCRIPT SO FAR:
+              {last}
+
+              Return JSON with:
+              - evasion, consistency, damage: integers 0-10
+              - coachingNote: one sentence
+              - stop: true when the answer is empty, says "end simulation", or the witness plainly has
+                nothing further to give; otherwise false
+              - transcript: the TRANSCRIPT SO FAR, unchanged, with this turn appended as Markdown:
+                "### Turn N - <topic> (<move>)", the question, the answer, the three scores, and the note.
+
+              Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+            json:
+              type: object
+              required: [evasion, consistency, damage, coachingNote, stop, transcript]
+              properties:
+                evasion: { type: number }
+                consistency: { type: number }
+                damage: { type: number }
+                coachingNote: { type: string }
+                stop: { type: boolean }
+                transcript: { type: string, minLength: 1 }
+              additionalProperties: false
+      until: { eq: [stop, true] }
+      as: exam
+
+    - kind: agent
+      profile: xexam-debriefer
+      label: debrief
+      task: |-
+        Write the cross-examination debrief for {params.witness}.
+
+        The first line must be exactly:
+        # Cross-exam simulation - [witness name]
+        Then: ## Executive summary, ## Attorney review focus, ## Weakest moments, ## Behavioural patterns,
+        ## Coaching recommendations, ## Transcript, ## Limitations.
+
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`, one per weak
+        moment or pattern that needs work with the witness. Map damage 8-10 to HIGH, 5-7 to MEDIUM, below 5
+        to LOW. Prefer 3-8 items.
+        Reproduce the transcript verbatim under ## Transcript.
+
+        STRATEGY:
+        {strategy}
+
+        TRANSCRIPT WITH SCORES:
+        {exam.transcript}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report

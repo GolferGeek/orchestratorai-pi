@@ -1,0 +1,81 @@
+name: sentinel
+description: Screen a batch of legal signals against a tracked portfolio. Signals are classified and deduplicated, cross-referenced against clients, matters, jurisdictions and entities of interest, and turned into an alert queue with severity, urgency and a recommended action.
+trigger: when the user asks to screen legal developments or news against a portfolio
+params:
+  - { name: target, required: true, description: "Folder holding the signal batch" }
+  - { name: portfolio, default: "matters/portfolio.md", description: "Path to the tracked portfolio" }
+  - { name: context, default: "Surface anything that touches the tracked portfolio and say what to do about it.", description: Objective }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: classifier (classify + deduplicate) -> evaluator (cross-reference against the portfolio)
+  -> digest writer.
+  Adapted from orchestratorai-local `legal/workflows/sentinel`. Local polls RSS, webpages and APIs on a
+  schedule; this local-first port deliberately does no network fetching - point it at a folder of signal
+  files that a separate fetcher (or a person) drops in, and run it per cycle. Deduplication is by
+  substance across the batch, not by stored content hash, so re-running over the same folder re-reports.
+
+  ```orchestrator-launch
+  title: Portfolio Sentinel
+  icon: eye
+  group: compliance-risk
+  file: { kind: folder, label: signal batch folder, param: target }
+  fields:
+    - { param: portfolio, label: Portfolio, kind: line }
+    - { param: context, label: Objective, kind: text }
+  samples:
+    - { title: Weekly signal batch (synthetic), path: fixtures/sentinel/signals }
+  review:
+    focusTitle: Triage focus
+    focusSubtitle: Work the critical and high alerts first. Dismissed signals are listed so you can check the screen was not too tight.
+    blurb: Confirm the alert queue and the recommended actions. Recording Approve or Request changes completes the review checkpoint.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: sentinel-classifier
+      label: classifier
+      task: |-
+        Classify and deduplicate the signal batch in the folder {params.target}.
+        Use ls and find to enumerate the files, then read each one.
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: signals
+
+    - kind: agent
+      profile: sentinel-evaluator
+      label: evaluator
+      task: |-
+        Evaluate the classified signals against the tracked portfolio.
+        Portfolio file to read: {params.portfolio}
+        Objective: {params.context}
+
+        CLASSIFIED SIGNALS:
+        {signals}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: alerts
+
+    - kind: agent
+      profile: sentinel-digest-writer
+      label: report
+      task: |-
+        Write the portfolio monitoring digest.
+        Signal batch: {params.target}   Portfolio: {params.portfolio}
+
+        The first line must be exactly:
+        # Portfolio sentinel - [cycle date or batch name]
+        Then: ## Executive summary, ## Attorney review focus, ## Alert queue, ## Dismissed signals,
+        ## Coverage gaps, ## Limitations.
+
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`, one per
+        alert, using the alert's own severity (CRITICAL maps to HIGH). Lead with anything urgent.
+
+        CLASSIFIED SIGNALS:
+        {signals}
+
+        ALERTS:
+        {alerts}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report

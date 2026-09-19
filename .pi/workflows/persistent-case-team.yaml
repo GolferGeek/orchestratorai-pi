@@ -1,0 +1,151 @@
+name: persistent-case-team
+description: Grow a living matter record from a batch of documents. A facts team extracts entities and the timeline while a documents team classifies and indexes, all merged with the record from previous runs, and the updated record is written back to the matter folder.
+trigger: when the user asks to add documents to a matter or update a matter record
+params:
+  - { name: target, required: true, description: "Folder holding the new document batch" }
+  - { name: matter_record, default: "matters/matter-record.md", description: "Path of the living matter record to read and rewrite" }
+  - { name: matter_name, default: "Untitled matter", description: "Matter name" }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: inventory -> facts team (entities, timeline) and documents team (index) in parallel ->
+  record writer (rewrites the matter record file) -> attorney summary of what changed.
+  Adapted from orchestratorai-local `legal/workflows/persistent-case-team`. Local keeps matter-scoped
+  state in Postgres; on Pi the durable state is the matter record Markdown file, which every run reads
+  and rewrites - so running it again on a new batch grows the same record. The record writer is the only
+  agent in the catalogue with write access, and it may write only the matter record path.
+
+  ```orchestrator-launch
+  title: Matters
+  icon: briefcase
+  group: litigation
+  file: { kind: folder, label: document batch folder, param: target }
+  fields:
+    - { param: matter_name, label: Matter, kind: line, default: "Harbor Peak v. Aspen Devices" }
+    - { param: matter_record, label: Record path, kind: line, default: "matters/harbor-peak/matter-record.md" }
+  samples:
+    - { title: Harbor Peak document batch (synthetic), path: fixtures/dealroom }
+  review:
+    focusTitle: Attorney review focus
+    focusSubtitle: Check new entities, date conflicts, and anything the batch contradicts in the existing record.
+    blurb: Confirm what this batch added to the matter record. Recording Approve or Request changes completes the attorney-review checkpoint.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: document-inventory
+      label: inventory
+      task: |-
+        Inventory every readable document in the folder {params.target}.
+        Use ls and find to enumerate it, then read enough of each file to classify it.
+        Each `path` must be the exact path a read tool can open (include the folder prefix).
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      json:
+        type: object
+        required: [documents]
+        properties:
+          documents:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              required: [path, name, type, summary]
+              properties:
+                path: { type: string, minLength: 1 }
+                name: { type: string }
+                type: { type: string }
+                summary: { type: string }
+              additionalProperties: false
+          note: { type: string }
+        additionalProperties: false
+      as: inventory
+
+    - kind: parallel
+      label: matter-teams
+      onError: collect
+      branches:
+        entities:
+          kind: agent
+          profile: matter-entity-extractor
+          label: entity-extractor
+          task: |-
+            Update the entity list for matter "{params.matter_name}".
+            Existing matter record to read first (it may not exist yet - if the read fails, start fresh):
+            {params.matter_record}
+            New documents in this batch (read each):
+            {inventory.documents}
+
+            Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+        timeline:
+          kind: agent
+          profile: matter-timeline-extractor
+          label: timeline-extractor
+          task: |-
+            Update the timeline for matter "{params.matter_name}".
+            Existing matter record to read first (it may not exist yet - if the read fails, start fresh):
+            {params.matter_record}
+            New documents in this batch (read each):
+            {inventory.documents}
+
+            Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+        documents:
+          kind: agent
+          profile: matter-document-indexer
+          label: document-indexer
+          task: |-
+            Update the document index for matter "{params.matter_name}".
+            Existing matter record to read first (it may not exist yet - if the read fails, start fresh):
+            {params.matter_record}
+            New documents in this batch (read each):
+            {inventory.documents}
+
+            Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: extracted
+
+    - kind: agent
+      profile: matter-record-writer
+      label: record-writer
+      task: |-
+        Write the updated matter record for "{params.matter_name}".
+        Write the complete merged record to exactly this path and no other file: {params.matter_record}
+        (create the directory path implicitly by writing the file; do not write anywhere else).
+
+        MERGED ENTITIES:
+        {extracted.entities}
+
+        MERGED TIMELINE:
+        {extracted.timeline}
+
+        MERGED DOCUMENT INDEX:
+        {extracted.documents}
+
+        Then submit the attorney-facing summary of this update as your result - what is new, what
+        conflicts appeared, and the open questions. Do not submit the whole record.
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: update
+
+    - kind: agent
+      profile: matter-document-indexer
+      label: report
+      task: |-
+        Write the batch update report for matter "{params.matter_name}".
+
+        The first line must be exactly:
+        # Matter update - {params.matter_name}
+        Then: ## What this batch added, ## Attorney review focus, ## New entities, ## Timeline changes,
+        ## Documents indexed, ## Conflicts and open questions, ## Record location.
+
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`: date or
+        fact conflicts between documents are HIGH, unresolved entity identities are MEDIUM, gaps are LOW.
+        Prefer 3-8 items. State the record path {params.matter_record} under ## Record location.
+
+        UPDATE SUMMARY:
+        {update}
+
+        BATCH INVENTORY:
+        {inventory.documents}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report

@@ -1,0 +1,154 @@
+name: due-diligence
+description: Work an entire deal room. Every document is classified and analysed, findings are cross-referenced into a risk matrix with deal-breaker flags, and counsel reviews twice - once on the per-document findings and again on the synthesis - before the diligence report is written.
+trigger: when the user asks to run due diligence over a deal room or document set
+params:
+  - { name: target, required: true, description: "Folder holding the deal room documents" }
+  - { name: transaction, default: "Proposed acquisition; buyer-side diligence.", description: "Transaction context" }
+  - { name: context, default: "Identify risks, deal-breakers, and missing materials for buyer-side counsel.", description: Objective }
+  - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
+doc: |-
+  Composition: inventory -> map(documents, 2 at a time) analyst -> **gate 1** (per-document findings) ->
+  synthesis -> **gate 2** (risk matrix) -> report.
+  Ported from orchestratorai-local `legal/workflows/due-diligence`, which has the same two attorney gates.
+
+  ```orchestrator-launch
+  title: Due Diligence
+  icon: magnifyingglass.circle
+  group: transactional
+  file: { kind: folder, label: deal room folder, param: target }
+  fields:
+    - { param: transaction, label: Transaction, kind: text }
+    - { param: context, label: Objective, kind: text }
+  samples:
+    - { title: Cedar Analytics deal room (synthetic), path: fixtures/dealroom }
+  review:
+    focusTitle: Attorney review focus
+    focusSubtitle: Work the deal-breakers and critical risks first. Every risk traces back to the document it came from.
+    blurb: Confirm the risk matrix and deal-breaker analysis. Recording Approve or Request changes completes the attorney-review checkpoint - not a legal opinion.
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: document-inventory
+      label: inventory
+      task: |-
+        Inventory every readable document in the folder {params.target}.
+        Use ls and find to enumerate it, then read enough of each file to classify it.
+        Each `path` must be the exact path a read tool can open (include the folder prefix).
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      json:
+        type: object
+        required: [documents]
+        properties:
+          documents:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              required: [path, name, type, summary]
+              properties:
+                path: { type: string, minLength: 1 }
+                name: { type: string }
+                type: { type: string }
+                summary: { type: string }
+              additionalProperties: false
+          note: { type: string }
+        additionalProperties: false
+      as: inventory
+
+    - kind: map
+      label: analyse
+      over: "{inventory.documents}"
+      concurrency: 2
+      body:
+        kind: agent
+        profile: dd-document-analyst
+        label: analyst
+        task: |-
+          Analyse deal-room document {index}: {item.name} (type: {item.type})
+          Path to read: {item.path}
+          Transaction: {params.transaction}
+          Objective: {params.context}
+
+          Head your output `## {item.name}`.
+
+          Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: findings
+
+    - kind: agent
+      profile: attorney-gate
+      label: gate-1-analysis
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Gate 1 - review document classifications and findings"
+        - summary: the DOCUMENT INVENTORY and the complete FINDINGS below, preceded by one line:
+          "Approve to proceed to synthesis, or request changes and say which documents were misrouted or need re-analysis."
+        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+
+        DOCUMENT INVENTORY:
+        {inventory.documents}
+
+        FINDINGS:
+        {findings}
+      as: gate1
+
+    - kind: agent
+      profile: dd-synthesizer
+      label: synthesis
+      task: |-
+        Synthesize the deal room at {params.target}.
+        Transaction: {params.transaction}
+        Objective: {params.context}
+
+        ATTORNEY DIRECTION FROM GATE 1 (apply any correction it gives):
+        {gate1}
+
+        PER-DOCUMENT FINDINGS:
+        {findings}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: matrix
+
+    - kind: agent
+      profile: attorney-gate
+      label: gate-2-synthesis
+      task: |-
+        Call the attorney_review tool exactly once with:
+        - run_id: "{params.run_id}"
+        - title: "Gate 2 - review the risk matrix and deal-breaker flags"
+        - summary: the complete RISK MATRIX below, unchanged, preceded by one line:
+          "Approve to write the report, or request changes and say what to refine."
+        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+
+        RISK MATRIX:
+        {matrix}
+      as: gate2
+
+    - kind: agent
+      profile: dd-report-writer
+      label: report
+      task: |-
+        Write the final diligence report for the deal room at {params.target}.
+        Transaction: {params.transaction}
+        Objective: {params.context}
+
+        The first line must be exactly:
+        # Due diligence - [deal or room name]
+        Then: ## Executive summary, ## Attorney review focus, ## Risk matrix, ## Deal-breaker analysis,
+        ## Cross-document findings, ## Missing materials, ## Reviewer decisions, ## Limitations.
+
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`, mapping
+        CRITICAL and HIGH risks to HIGH. Prefer 5-10 items; lead with deal-breakers.
+        If either gate requested changes, address the COMMENT explicitly in the affected sections.
+
+        GATE 1 DECISION: {gate1}
+        GATE 2 DECISION: {gate2}
+
+        RISK MATRIX AND CROSS-DOCUMENT FINDINGS:
+        {matrix}
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report
