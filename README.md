@@ -134,6 +134,11 @@ edge cases), `fixtures/litigation` (a motion to dismiss and a structured case re
 `fixtures/compliance`, `fixtures/onboarding`, `fixtures/sentinel/signals`, plus
 `fixtures/dealroom-diligence-record.md`. All synthetic and labelled as such.
 
+## Demo notes
+
+[docs/whats-cool.md](docs/whats-cool.md) — the story, the demo-able moments in order with timings and
+what to say, the claims with their receipts, and the honest caveats. Written to script a video from.
+
 ## Store schema
 
 `runs` (one per launch; engine status, params, final Markdown/JSON) · `run_events` (journal) · `checkpoints` (gate / final_review with attorney decision) · `evaluations` (every Jev rubric decision, with answers and confidence). The Swift reader and the TypeScript writer share the schema; see `.pi/extensions/orchestrator/store.ts`.
