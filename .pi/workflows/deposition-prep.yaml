@@ -1,5 +1,5 @@
 name: deposition-prep
-description: Prepare for a deposition from witness details and case facts. Produces a preparation outline with themes, predicted questions, vulnerabilities and an exhibit plan - or switches to predicted-cross-exam mode for opposing counsel's likely attack lines with answer coaching.
+description: Prepare for a deposition from witness details and case facts. Produces a preparation outline with themes, predicted questions, vulnerabilities and an exhibit plan - or switches to predicted-cross-exam mode for opposing counsel's likely attack lines. Contains no suggested answers by design.
 trigger: when the user asks to prepare for a deposition or to predict cross-examination of a witness
 params:
   - { name: witness, required: true, description: "Witness name and type (corporate officer, expert, fact witness)" }
