@@ -431,14 +431,29 @@ export default function orchestrator(pi: any) {
         };
       }
 
-      const checkpoint = db.createCheckpoint({
-        id: randomUUID(),
-        runId: run.id,
-        kind: "gate",
-        title: params.title,
-        summaryMarkdown: params.summary,
-      });
-      db.appendEvent({ runId: run.id, type: "gate_requested", summary: `Waiting for attorney — ${params.title}`, detail: params.summary });
+      // Idempotent per (run, title): a delegated agent that calls this tool
+      // twice for the same decision reuses the existing checkpoint instead of
+      // asking the attorney the same question again.
+      const existing = db.findCheckpointByTitle(run.id, params.title);
+      if (existing && existing.status !== "pending" && existing.status !== "cancelled") {
+        const comment = existing.decision_comment?.trim() || "(no comment)";
+        return {
+          content: [{ type: "text", text: `DECISION: ${existing.status}\nCOMMENT: ${comment}` }],
+          details: { checkpointId: existing.id, status: existing.status, reused: true },
+        };
+      }
+      const checkpoint = existing && existing.status === "pending"
+        ? existing
+        : db.createCheckpoint({
+            id: randomUUID(),
+            runId: run.id,
+            kind: "gate",
+            title: params.title,
+            summaryMarkdown: params.summary,
+          });
+      if (!existing || existing.status !== "pending") {
+        db.appendEvent({ runId: run.id, type: "gate_requested", summary: `Waiting for attorney — ${params.title}`, detail: params.summary });
+      }
 
       const startedAt = Date.now();
       while (true) {

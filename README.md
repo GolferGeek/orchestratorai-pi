@@ -59,22 +59,46 @@ The Activity disclosure shows the journal: each node's start/finish, the model u
 
 ## Legal workflow catalog
 
-The sidebar lists Legal's 14-workflow catalog grouped as in the product registry. **Ready** entries have `.pi/workflows/{id}.yaml` with a launch block; **Coming soon** entries are listed honestly with Start disabled.
+All fourteen Legal workflows are Ready: each has a `.pi/workflows/{id}.yaml` carrying both its flow and its
+launch UI. Every one below has completed at least one full run on `qwen3.6` through Ollama.
 
-| Workflow | Input | Composition | Gate |
+| Workflow | Input | Composition | Attorney gates |
 |---|---|---|---|
 | `document-onboarding` | document | classifier ∥ completeness → summary | final review |
 | `contract-review` | contract | red ∥ blue → arbitrator → **gate** → summary | mid-flow + final |
-| `adversarial-brief` | brief | analyst → round 1 {blue ×3 ∥ → red ×3 ∥ → judge} → switch(converged? skip : round 2) → synth → **gate** → fortify → report | mid-flow + final |
-| `legal-research` | typed question | analyst → map(sub-questions) → memo → **gate** → switch(deepen) → report | mid-flow + final |
-| `kb-query` | typed question | single cited answer from the knowledge folder | final review |
-| `compliance-audit` | policy document | classifier → map(sections) evaluator vs `knowledge/frameworks` → scorer → **gate** → report | mid-flow + final |
+| `due-diligence` | folder | inventory → map(analyst) → **gate 1** → synthesis → **gate 2** → report | 2 + final |
+| `deal-memo` | diligence record | intake → 5 section drafters ∥ → assembly → **gate** → finalize | 1 + final |
+| `adversarial-brief` | brief | analyst → round 1 {blue ×3 ∥ → red ×3 ∥ → judge} → switch(converged? skip : round 2) → synthesis → **gate** → fortify → report | 1 + final |
+| `discovery-review` | folder | inventory → map(coder) → batcher → **privilege** → **relevance** → **hot docs** → **QA sample** → production set + privilege log | 4 + final |
+| `deposition-prep` | typed | case analyst → switch(mode) { outline: questions → research \| cross-exam: opposing counsel → predicted cross → preparation } → report | final review |
+| `cross-exam-simulation` | typed | strategist → loop(≤5) { question → **gate: you answer as the witness** → scorer } → debrief | one per turn + final |
+| `monte-carlo-trial-simulator` | case record | parameter designer → map(sim) { plaintiff ∥ defence → jury } → statistics → report | final review |
+| `persistent-case-team` | folder | inventory → entities ∥ timeline ∥ index → record writer (rewrites the matter file) → update report | final review |
+| `compliance-audit` | policy | classifier → map(section) vs `knowledge/frameworks` → scorer → **gate** → report | 1 + final |
+| `sentinel` | folder | classifier (classify + dedupe) → evaluator vs portfolio → digest | final review |
+| `legal-research` | typed | analyst → map(sub-questions) → memo → **gate** → switch(deepen) → report | 1 + final |
+| `kb-query` | typed | single cited answer from the knowledge folder | final review |
 
-Ports follow orchestratorai-local's `legal/workflows/*` briefs and the agent-catalog prompts, rewritten text-first for local models. All six have completed full runs on `qwen3.6` via Ollama.
+Ports follow orchestratorai-local's `legal/workflows/*` briefs and its agent-catalog prompts, rewritten
+text-first for local models. Two are honest adaptations rather than literal ports, and say so in their
+`doc:` block: **persistent-case-team** keeps matter state in a Markdown record each run reads and rewrites
+(Local uses Postgres), and **sentinel** screens a folder of signal files rather than polling the network.
 
-**Local-model rule of thumb:** pi-agents requires every agent to finish by calling `pi_agents_submit_result`; local models drop that when the prompt gets very large. Keep each node's context bounded (no accumulating records across loop iterations — unroll instead), put the delivery instruction as the *last* line of every task, and use `onError: collect` on parallel teams so one lapse doesn't sink a run. The launch block's `file:` takes `kind: file` (default), `kind: folder`, or `kind: none` (typed fields only).
+The launch block's `file:` takes `kind: file` (the default), `kind: folder`, or `kind: none` for
+workflows driven entirely by typed fields.
 
-Remaining (Coming soon): due-diligence, deal-memo, discovery-review, deposition-prep, cross-exam-simulation, monte-carlo-trial-simulator, persistent-case-team, sentinel. The folder-input ones need `kind: folder` plus a map over an inventory; cross-exam is a loop of `attorney_review` gates (one per question).
+**Local-model rule of thumb:** pi-agents requires every agent to finish by calling
+`pi_agents_submit_result`; local models drop that when the prompt gets very large. Keep each node's
+context bounded (no accumulating records across loop iterations — unroll instead), put the delivery
+instruction as the *last* line of every task, and use `onError: collect` on parallel teams so one lapse
+does not sink a run.
+
+### Fixtures
+
+`fixtures/dealroom` (5-document deal room), `fixtures/discovery` (6-document corpus with real privilege
+edge cases), `fixtures/litigation` (a motion to dismiss and a structured case record),
+`fixtures/compliance`, `fixtures/onboarding`, `fixtures/sentinel/signals`, plus
+`fixtures/dealroom-diligence-record.md`. All synthetic and labelled as such.
 
 ## Store schema
 

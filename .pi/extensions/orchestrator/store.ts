@@ -302,6 +302,17 @@ export class RunStore {
       .get(id) as CheckpointRow | undefined;
   }
 
+  /** Most recent checkpoint for this run with the same title, if any. Used to
+   * make the attorney_review tool idempotent: an agent that calls it twice for
+   * the same decision must not ask the attorney the same question twice. */
+  findCheckpointByTitle(runId: string, title: string): CheckpointRow | undefined {
+    return this.db
+      .prepare(
+        "SELECT * FROM checkpoints WHERE run_id = ? AND title = ? ORDER BY requested_at DESC LIMIT 1",
+      )
+      .get(runId, title) as CheckpointRow | undefined;
+  }
+
   cancelPendingCheckpoints(runId: string, reason: string): void {
     const at = nowIso();
     this.db
