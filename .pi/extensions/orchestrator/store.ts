@@ -41,6 +41,10 @@ export interface RunRow {
   result_markdown: string | null;
   result_json: string | null;
   agents: number | null;
+  flow_json: string | null;
+  display: string | null;
+  resume_offset: number;
+  resumes: number;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -72,6 +76,10 @@ export interface EventInsert {
   detail?: string;
   payload?: unknown;
   at?: number;
+  /** Raw JSON of a completed node's value, kept for resume. */
+  value?: unknown;
+  /** Index of the top-level sequence step this event belongs to, if any. */
+  stepIndex?: number;
 }
 
 const SCHEMA = `
@@ -141,7 +149,42 @@ CREATE TABLE IF NOT EXISTS evaluations (
   at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS evaluations_run ON evaluations(run_id, at);
+
+CREATE TABLE IF NOT EXISTS run_progress (
+  session_file TEXT PRIMARY KEY,   -- joins run_events.detail of the node_session event
+  text TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_state (
+  run_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value_json TEXT NOT NULL,
+  reducer TEXT NOT NULL,          -- set | append | merge
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS step_overrides (
+  run_id TEXT NOT NULL,
+  step_index INTEGER NOT NULL,
+  value_json TEXT NOT NULL,
+  note TEXT,
+  at TEXT NOT NULL,
+  PRIMARY KEY (run_id, step_index)
+);
 `;
+
+/** Columns added after the first release; applied idempotently at open. */
+const MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
+  { table: "runs", column: "flow_json", ddl: "ALTER TABLE runs ADD COLUMN flow_json TEXT" },
+  { table: "runs", column: "display", ddl: "ALTER TABLE runs ADD COLUMN display TEXT" },
+  { table: "runs", column: "resume_offset", ddl: "ALTER TABLE runs ADD COLUMN resume_offset INTEGER NOT NULL DEFAULT 0" },
+  { table: "runs", column: "resumes", ddl: "ALTER TABLE runs ADD COLUMN resumes INTEGER NOT NULL DEFAULT 0" },
+  { table: "run_events", column: "value_json", ddl: "ALTER TABLE run_events ADD COLUMN value_json TEXT" },
+  { table: "run_events", column: "step_index", ddl: "ALTER TABLE run_events ADD COLUMN step_index INTEGER" },
+];
 
 function nowIso(at?: number): string {
   return new Date(at ?? Date.now()).toISOString();
@@ -169,6 +212,10 @@ export class RunStore {
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec("PRAGMA synchronous = NORMAL;");
     this.db.exec(SCHEMA);
+    for (const m of MIGRATIONS) {
+      const cols = this.db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === m.column)) this.db.exec(m.ddl);
+    }
   }
 
   close(): void {
@@ -262,13 +309,108 @@ export class RunStore {
       );
   }
 
+  /** Persist the expanded flow and display path so the run can be resumed later. */
+  setFlow(id: string, flow: unknown, display: string | undefined): void {
+    this.db
+      .prepare("UPDATE runs SET flow_json = ?, display = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(flow), display ?? null, nowIso(), id);
+  }
+
+  /** Values of completed top-level steps, by original step index (latest wins). */
+  completedStepValues(runId: string): Map<number, unknown> {
+    const rows = this.db
+      .prepare("SELECT step_index, value_json FROM run_events WHERE run_id = ? AND type = 'node_completed' AND step_index IS NOT NULL ORDER BY seq")
+      .all(runId) as Array<{ step_index: number; value_json: string | null }>;
+    const out = new Map<number, unknown>();
+    for (const r of rows) out.set(r.step_index, r.value_json === null ? null : JSON.parse(r.value_json));
+    return out;
+  }
+
+  stepOverrides(runId: string): Map<number, unknown> {
+    const rows = this.db
+      .prepare("SELECT step_index, value_json FROM step_overrides WHERE run_id = ?")
+      .all(runId) as Array<{ step_index: number; value_json: string }>;
+    return new Map(rows.map((r) => [r.step_index, JSON.parse(r.value_json)]));
+  }
+
+  markResumed(id: string, piRunId: string, resumeOffset: number): void {
+    const at = nowIso();
+    this.db
+      .prepare(
+        "UPDATE runs SET pi_run_id = ?, status = 'running', error = NULL, completed_at = NULL, resume_offset = ?, resumes = resumes + 1, updated_at = ? WHERE id = ?",
+      )
+      .run(piRunId, resumeOffset, at, id);
+  }
+
+  // ------------------------------------------------------------- progress
+
+  /** Live text of a delegated agent, written by the child process itself. */
+  setProgress(sessionFile: string, text: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO run_progress (session_file, text, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(session_file) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at`,
+      )
+      .run(sessionFile, text, nowIso());
+  }
+
+  clearProgress(sessionFile: string): void {
+    this.db.prepare("DELETE FROM run_progress WHERE session_file = ?").run(sessionFile);
+  }
+
+  // ---------------------------------------------------------------- state
+
+  /**
+   * Typed run state with reducers, enforced here rather than by the model:
+   *   set    - replace the value
+   *   append - value must be an array; incoming items are pushed (an object is pushed as one item)
+   *   merge  - value must be an object; incoming keys overwrite existing ones
+   * The reducer is fixed on first write for a key; later writes must agree.
+   */
+  updateState(runId: string, key: string, reducer: "set" | "append" | "merge", incoming: unknown): { value: unknown; version: number } {
+    const row = this.db
+      .prepare("SELECT value_json, reducer, version FROM run_state WHERE run_id = ? AND key = ?")
+      .get(runId, key) as { value_json: string; reducer: string; version: number } | undefined;
+    if (row && row.reducer !== reducer) throw new Error(`state key '${key}' uses reducer '${row.reducer}', not '${reducer}'`);
+    let next: unknown;
+    const current = row ? JSON.parse(row.value_json) : undefined;
+    switch (reducer) {
+      case "set": next = incoming; break;
+      case "append": {
+        const base = Array.isArray(current) ? current : [];
+        next = base.concat(Array.isArray(incoming) ? incoming : [incoming]);
+        break;
+      }
+      case "merge": {
+        if (incoming === null || typeof incoming !== "object" || Array.isArray(incoming)) throw new Error(`merge into '${key}' needs an object`);
+        next = { ...(current && typeof current === "object" && !Array.isArray(current) ? current : {}), ...(incoming as object) };
+        break;
+      }
+    }
+    const version = (row?.version ?? 0) + 1;
+    this.db
+      .prepare(
+        `INSERT INTO run_state (run_id, key, value_json, reducer, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(run_id, key) DO UPDATE SET value_json = excluded.value_json, version = excluded.version, updated_at = excluded.updated_at`,
+      )
+      .run(runId, key, JSON.stringify(next), reducer, version, nowIso());
+    return { value: next, version };
+  }
+
+  getState(runId: string, key?: string): Record<string, unknown> {
+    const rows = (key
+      ? this.db.prepare("SELECT key, value_json FROM run_state WHERE run_id = ? AND key = ?").all(runId, key)
+      : this.db.prepare("SELECT key, value_json FROM run_state WHERE run_id = ?").all(runId)) as Array<{ key: string; value_json: string }>;
+    return Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.value_json)]));
+  }
+
   // -------------------------------------------------------------- events
 
   appendEvent(event: EventInsert): void {
     this.db
       .prepare(
-        `INSERT INTO run_events (run_id, at, type, node_path, node_instance, node_kind, agent, label, summary, detail, payload_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO run_events (run_id, at, type, node_path, node_instance, node_kind, agent, label, summary, detail, payload_json, value_json, step_index)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         event.runId,
@@ -282,6 +424,8 @@ export class RunStore {
         event.summary,
         event.detail ?? null,
         event.payload === undefined ? null : (textOf(event.payload) ?? null),
+        event.value === undefined ? null : JSON.stringify(event.value),
+        event.stepIndex ?? null,
       );
   }
 

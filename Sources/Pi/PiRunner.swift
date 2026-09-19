@@ -11,6 +11,8 @@ final class PiRunner: ObservableObject {
     @Published var selectedRunId: String?
     @Published var events: [RunEventRecord] = []
     @Published var evaluations: [EvaluationRecord] = []
+    @Published var stepOutputs: [RunStore.StepOutput] = []
+    @Published var liveText: [RunStore.LiveText] = []
     @Published var evaluationCounts: [String: (block: Int, review: Int, pass: Int)] = [:]
     @Published var status = "Ready"
     @Published var isRunning = false
@@ -24,7 +26,13 @@ final class PiRunner: ObservableObject {
     private var outputPipe: Pipe?
     private let lineBuffer = LineBuffer()
     private var activeRunId: String?
-    private var pollTimer: Timer?
+    // Store change notification: SQLite in WAL mode appends to <db>-wal on every
+    // commit, so watching that file (and the db, for checkpoints) with a
+    // dispatch source wakes us on writes instead of polling. A slow fallback
+    // timer covers the rare case where the -wal file is recreated.
+    private var storeWatchers: [DispatchSourceFileSystemObject] = []
+    private var fallbackTimer: Timer?
+    private var refreshCoalescer: DispatchWorkItem?
 
     var selectedRun: RunRecord? {
         runs.first { $0.id == selectedRunId }
@@ -61,6 +69,7 @@ final class PiRunner: ObservableObject {
         self.projectDirectory = projectDirectory
         store = RunStore(projectDirectory: projectDirectory)
         storeUnavailable = store == nil
+        markOrphanedRuns()
         refresh()
         if selectedRunId == nil { selectedRunId = runs.first?.id }
         schedulePolling()
@@ -75,9 +84,13 @@ final class PiRunner: ObservableObject {
         evaluationCounts = store.evaluationSummary()
         if let selectedRunId {
             events = store.events(runId: selectedRunId)
+            stepOutputs = store.stepOutputs(runId: selectedRunId)
+            liveText = store.liveText(runId: selectedRunId)
             evaluations = store.evaluations(runId: selectedRunId)
         } else {
             events = []
+            stepOutputs = []
+            liveText = []
             evaluations = []
         }
         if let activeRunId, let run = runs.first(where: { $0.id == activeRunId }) {
@@ -90,10 +103,51 @@ final class PiRunner: ObservableObject {
     }
 
     private func schedulePolling() {
-        pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+        stopWatching()
+        guard let store else { return }
+        for path in [store.path, store.path + "-wal"] {
+            // The -wal file may not exist until the first write; the fallback timer re-arms us.
+            let fd = open(path, O_EVTONLY)
+            guard fd >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend, .delete, .rename], queue: .main)
+            source.setEventHandler { [weak self] in
+                guard let self else { return }
+                let flags = source.data
+                self.scheduleRefresh()
+                if flags.contains(.delete) || flags.contains(.rename) {
+                    // The file was replaced (e.g. WAL checkpoint/truncate); re-open our watchers.
+                    self.schedulePolling()
+                }
+            }
+            source.setCancelHandler { close(fd) }
+            source.resume()
+            storeWatchers.append(source)
         }
+        fallbackTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.refresh()
+                // Re-arm if the -wal appeared after we started (first write of a fresh store).
+                if self.storeWatchers.count < 2, let store = self.store, FileManager.default.fileExists(atPath: store.path + "-wal") {
+                    self.schedulePolling()
+                }
+            }
+        }
+    }
+
+    /// Coalesce bursts of writes (a run emits many events in quick succession) into one refresh.
+    private func scheduleRefresh() {
+        refreshCoalescer?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.refresh() }
+        refreshCoalescer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    private func stopWatching() {
+        for source in storeWatchers { source.cancel() }
+        storeWatchers.removeAll()
+        fallbackTimer?.invalidate()
+        fallbackTimer = nil
     }
 
     func select(runId: String?) {
@@ -104,13 +158,6 @@ final class PiRunner: ObservableObject {
     // MARK: Launch
 
     func start(workflow: WorkflowDefinition, params: [String: String], sourceDocument: String, model: String) {
-        guard let projectDirectory else { return }
-        guard let piPath = PiEnvironment.findPiExecutable() else {
-            errorMessage = "Could not find the `pi` executable. Install it with `npm i -g @earendil-works/pi-coding-agent` or set PI_PATH."
-            return
-        }
-        stop()
-
         let runId = UUID().uuidString.lowercased()
         let documentTitle = sourceDocument.hasPrefix("/")
             ? URL(fileURLWithPath: sourceDocument).deletingPathExtension().lastPathComponent
@@ -123,6 +170,23 @@ final class PiRunner: ObservableObject {
             "params": params,
             "model": model
         ]
+        launchPi(command: "start", request: request, runId: runId, model: model)
+    }
+
+    /// Crash-resume: the extension rebuilds the remainder of the stored flow from the
+    /// completed steps' values (and any attorney overrides) and starts it under the same run id.
+    func resume(run: RunRecord) {
+        launchPi(command: "resume", request: ["runId": run.id], runId: run.id, model: run.model ?? "qwen3.6:latest")
+    }
+
+    /// One Pi RPC process per launch; `/orchestrator <command> {json}` is the only thing sent.
+    private func launchPi(command: String, request: [String: Any], runId: String, model: String) {
+        guard let projectDirectory else { return }
+        guard let piPath = PiEnvironment.findPiExecutable() else {
+            errorMessage = "Could not find the `pi` executable. Install it with `npm i -g @earendil-works/pi-coding-agent` or set PI_PATH."
+            return
+        }
+        stop()
         guard let json = try? JSONSerialization.data(withJSONObject: request),
               let jsonText = String(data: json, encoding: .utf8) else {
             errorMessage = "Could not encode the launch request."
@@ -179,8 +243,8 @@ final class PiRunner: ObservableObject {
             self.process = process
             inputPipe = input
             outputPipe = output
-            send(["type": "prompt", "message": "/orchestrator start \(jsonText)"])
-            status = "Launching workflow…"
+            send(["type": "prompt", "message": "/orchestrator \(command) \(jsonText)"])
+            status = command == "resume" ? "Resuming workflow…" : "Launching workflow…"
         } catch {
             isRunning = false
             activeRunId = nil
@@ -188,6 +252,26 @@ final class PiRunner: ObservableObject {
             errorMessage = "Could not start Pi: \(error.localizedDescription)"
         }
         refresh()
+    }
+
+    /// A run left "running" with no live Pi behind it (the app quit, a script ended) can only be
+    /// resumed, never finished on its own. Called on attach; uses a staleness heuristic because
+    /// runs launched by scripts are not this process's children.
+    func markOrphanedRuns() {
+        guard let store else { return }
+        let cutoff = Date().addingTimeInterval(-180)
+        for run in store.runs() where run.isLive && run.id != activeRunId {
+            let lastActivity = store.events(runId: run.id).last.flatMap { Self.parseISO($0.at) } ?? Self.parseISO(run.updatedAt)
+            if let lastActivity, lastActivity < cutoff {
+                store.markOrphaned(runId: run.id, message: "No live Pi process behind this run (found at launch). Resume to finish it.")
+            }
+        }
+    }
+
+    private static func parseISO(_ value: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
     func stop() {
@@ -228,6 +312,16 @@ final class PiRunner: ObservableObject {
         let status = approved ? "approved" : "changes_requested"
         let prefix = approved ? "Approved by attorney." : "Changes requested by attorney."
         store?.decide(checkpointId: checkpoint.id, status: status, comment: note.isEmpty ? prefix : "\(prefix) \(note)")
+        refresh()
+    }
+
+    func overrideStep(runId: String, stepIndex: Int, text: String, note: String?) {
+        store?.setStepOverride(runId: runId, stepIndex: stepIndex, text: text, note: note)
+        refresh()
+    }
+
+    func clearOverride(runId: String, stepIndex: Int) {
+        store?.clearStepOverride(runId: runId, stepIndex: stepIndex)
         refresh()
     }
 
@@ -273,7 +367,7 @@ final class PiRunner: ObservableObject {
                   let content = message["content"] as? String,
                   let reply = try? JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any] else { return }
             if reply["ok"] as? Bool == true {
-                status = "Workflow running"
+                status = reply["op"] as? String == "resume" ? "Workflow resumed" : "Workflow running"
                 if let warnings = reply["warnings"] as? [String], !warnings.isEmpty {
                     errorMessage = "Pi warnings: " + warnings.joined(separator: " · ")
                 }

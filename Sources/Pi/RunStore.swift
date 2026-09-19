@@ -17,6 +17,7 @@ struct RunRecord: Identifiable, Hashable {
     let error: String?
     let resultMarkdown: String?
     let agents: Int?
+    let resumes: Int
     let createdAt: String
     let startedAt: String?
     let completedAt: String?
@@ -173,14 +174,15 @@ final class RunStore {
       id TEXT PRIMARY KEY, workflow TEXT NOT NULL, title TEXT NOT NULL, source_document TEXT,
       params_json TEXT NOT NULL, model TEXT, pi_run_id TEXT, status TEXT NOT NULL, error TEXT,
       result_markdown TEXT, result_json TEXT, agents INTEGER, created_at TEXT NOT NULL,
-      started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL
+      started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL,
+      flow_json TEXT, display TEXT, resume_offset INTEGER NOT NULL DEFAULT 0, resumes INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS runs_pi_run_id ON runs(pi_run_id);
     CREATE INDEX IF NOT EXISTS runs_created_at ON runs(created_at);
     CREATE TABLE IF NOT EXISTS run_events (
       seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, at TEXT NOT NULL, type TEXT NOT NULL,
       node_path TEXT, node_instance TEXT, node_kind TEXT, agent TEXT, label TEXT, summary TEXT NOT NULL,
-      detail TEXT, payload_json TEXT
+      detail TEXT, payload_json TEXT, value_json TEXT, step_index INTEGER
     );
     CREATE INDEX IF NOT EXISTS run_events_run ON run_events(run_id, seq);
     CREATE TABLE IF NOT EXISTS checkpoints (
@@ -195,6 +197,13 @@ final class RunStore {
       model TEXT, input_tokens INTEGER, output_tokens INTEGER, at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS evaluations_run ON evaluations(run_id, at);
+    CREATE TABLE IF NOT EXISTS run_progress (
+      session_file TEXT PRIMARY KEY, text TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS step_overrides (
+      run_id TEXT NOT NULL, step_index INTEGER NOT NULL, value_json TEXT NOT NULL, note TEXT, at TEXT NOT NULL,
+      PRIMARY KEY (run_id, step_index)
+    );
     """
 
     // MARK: Reads
@@ -311,16 +320,93 @@ final class RunStore {
     }
 
     /// Marks a queued/running run as stopped when the Pi process died underneath it.
+    /// Pending gates are left pending on purpose: a resume re-runs the gate step and
+    /// the idempotent attorney_review tool picks the existing checkpoint back up.
     @discardableResult
     func markOrphaned(runId: String, message: String) -> Bool {
         let now = ISO8601DateFormatter().string(from: Date())
         return execute(
             "UPDATE runs SET status = 'stopped', error = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status IN ('queued','running')",
             bind: [message, now, now, runId]
-        ) && execute(
-            "UPDATE checkpoints SET status = 'cancelled', decision_comment = ?, decided_at = ? WHERE run_id = ? AND status = 'pending'",
-            bind: [message, now, runId]
         )
+    }
+
+    // MARK: Live text
+
+    struct LiveText: Identifiable, Hashable {
+        let sessionFile: String
+        let label: String
+        let text: String
+        let updatedAt: String
+        var id: String { sessionFile }
+    }
+
+    /// What each still-running agent of a run is writing right now. Children write
+    /// run_progress keyed by their session file; the parent's node_session event carries it.
+    func liveText(runId: String) -> [LiveText] {
+        query(
+            """
+            SELECT e.detail, e.label, p.text, p.updated_at
+            FROM run_events e JOIN run_progress p ON p.session_file = e.detail
+            WHERE e.run_id = ? AND e.type = 'node_session'
+              AND NOT EXISTS (SELECT 1 FROM run_events d WHERE d.run_id = e.run_id AND d.node_instance = e.node_instance
+                              AND d.type IN ('node_completed','node_failed','node_cancelled') AND d.seq > e.seq)
+            ORDER BY p.updated_at DESC
+            """,
+            bind: [runId]
+        ) { stmt in
+            LiveText(sessionFile: Self.text(stmt, 0) ?? "", label: Self.text(stmt, 1) ?? "agent", text: Self.text(stmt, 2) ?? "", updatedAt: Self.text(stmt, 3) ?? "")
+        }
+    }
+
+    // MARK: Resume support
+
+    /// A completed top-level step of a run: what resume will re-bind, and what an attorney may edit first.
+    struct StepOutput: Identifiable, Hashable {
+        let stepIndex: Int
+        let label: String
+        let valueText: String
+        let isOverridden: Bool
+        var id: Int { stepIndex }
+    }
+
+    func stepOutputs(runId: String) -> [StepOutput] {
+        let overrides = Set(query("SELECT step_index FROM step_overrides WHERE run_id = ?", bind: [runId]) { Int(sqlite3_column_int64($0, 0)) })
+        return query(
+            "SELECT step_index, label, value_json FROM run_events WHERE run_id = ? AND type = 'node_completed' AND step_index IS NOT NULL ORDER BY seq",
+            bind: [runId]
+        ) { stmt in
+            let index = Int(sqlite3_column_int64(stmt, 0))
+            let raw = Self.text(stmt, 2) ?? ""
+            // Show strings as themselves, anything else as pretty JSON.
+            let shown: String
+            if let data = raw.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
+                if let str = obj as? String { shown = str }
+                else if let pretty = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) { shown = String(data: pretty, encoding: .utf8) ?? raw }
+                else { shown = raw }
+            } else { shown = raw }
+            return StepOutput(stepIndex: index, label: Self.text(stmt, 1) ?? "step \(index + 1)", valueText: shown, isOverridden: overrides.contains(index))
+        }
+        .reduce(into: [Int: StepOutput]()) { $0[$1.stepIndex] = $1 }   // latest completion per step wins
+        .values.sorted { $0.stepIndex < $1.stepIndex }
+    }
+
+    /// Attorney edit of a completed step's output; resume uses it instead of the stored value.
+    @discardableResult
+    func setStepOverride(runId: String, stepIndex: Int, text: String, note: String?) -> Bool {
+        // Store the edited text as a JSON string so the extension can re-bind it as-is.
+        guard let data = try? JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed]),
+              let json = String(data: data, encoding: .utf8) else { return false }
+        let now = ISO8601DateFormatter().string(from: Date())
+        return execute(
+            "INSERT OR REPLACE INTO step_overrides (run_id, step_index, value_json, note, at) VALUES (?, ?, ?, ?, ?)",
+            bind: [runId, String(stepIndex), json, note, now]
+        )
+    }
+
+    @discardableResult
+    func clearStepOverride(runId: String, stepIndex: Int) -> Bool {
+        execute("DELETE FROM step_overrides WHERE run_id = ? AND step_index = ?", bind: [runId, String(stepIndex)])
     }
 
     // MARK: SQLite plumbing
@@ -400,6 +486,7 @@ final class RunStore {
             error: text(stmt, named: "error"),
             resultMarkdown: text(stmt, named: "result_markdown"),
             agents: int(stmt, named: "agents"),
+            resumes: int(stmt, named: "resumes") ?? 0,
             createdAt: text(stmt, named: "created_at") ?? "",
             startedAt: text(stmt, named: "started_at"),
             completedAt: text(stmt, named: "completed_at"),

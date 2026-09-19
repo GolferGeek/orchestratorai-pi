@@ -31,7 +31,25 @@ Two checkpoint kinds, both rows in the `checkpoints` table:
 - **Gate** (mid-flow). A workflow step uses the `attorney-gate` persona, whose only tool is `attorney_review`. The tool writes a pending checkpoint and blocks until the attorney approves or requests changes in the app; the decision and note are returned to the workflow verbatim and can steer later steps (contract-review feeds them into summary generation). From the Pi TUI, with no console attached, the gate is skipped automatically.
 - **Final review** (post-run). Created by the extension when a run completes. The app shows the report and the parsed "Attorney review focus" checklist, and records Approve / Request changes.
 
-A gate keeps the Pi process (and the waiting agent) alive, so it lives as long as the app session. Final review does not need Pi running.
+## Checkpointing and resume
+
+Every run is resumable from the store, without pi-agents support for it:
+
+- **Crash-resume.** The expanded flow is stored at `run_created` and every top-level step's value at
+  `node_completed`. `/orchestrator resume {runId}` rebuilds the remainder as an inline flow — `value`
+  nodes re-bind the completed steps (an attorney override wins), then the remaining steps run with params
+  substituted — and starts it under the same run id. A step that was mid-way (a loop, a waiting gate)
+  re-runs; a gate the attorney already decided is picked straight back up because `attorney_review` is
+  idempotent per (run, title), and a crash never cancels a pending decision (only an explicit stop does).
+  Verified by killing Pi at the contract-review gate: resume ran two more agent calls, not five.
+- **Edit state before resume.** A stopped run's completed steps are listed in the app; an attorney can
+  replace a step's output and resume — the remainder sees the edited value.
+- **Typed run state with reducers.** `state_update(key, reducer, value)` / `state_get` tools, with `set`,
+  `append`, and `merge` enforced by the store rather than by the model, so loops accumulate results in
+  the store instead of growing their own context.
+- **Live text, no polling.** The app watches the store's WAL with a dispatch source instead of a timer;
+  each delegated agent streams what it is writing (including the result it is submitting) into
+  `run_progress`, and the app shows it for the running node.
 
 ## Requirements
 

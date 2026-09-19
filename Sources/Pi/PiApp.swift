@@ -101,6 +101,7 @@ struct ContentView: View {
                                 gateCard
                                 attorneyReviewCard
                                 resultCard
+                                resumeCard
                                 EvaluationsCard(evaluations: runner.evaluations)
                                 humanReviewCard
                             }
@@ -526,6 +527,22 @@ struct ContentView: View {
         runner.start(workflow: workflow, params: params, sourceDocument: source, model: model)
     }
 
+    // MARK: Resume (crash recovery + edit-before-resume)
+
+    private var resumeCard: some View {
+        Group {
+            if let run = displayedRun, let state = displayedState, state == .failed || state == .stopped, !runner.isRunning {
+                StepOutputsCard(
+                    run: run,
+                    steps: runner.stepOutputs,
+                    onResume: { runner.resume(run: run) },
+                    onOverride: { index, text in runner.overrideStep(runId: run.id, stepIndex: index, text: text, note: nil) },
+                    onClearOverride: { index in runner.clearOverride(runId: run.id, stepIndex: index) }
+                )
+            }
+        }
+    }
+
     // MARK: Gate (mid-flow attorney decision)
 
     private var gateCard: some View {
@@ -638,6 +655,26 @@ struct ContentView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
+                            // Live text: what each running agent is writing, streamed by the child process itself.
+                            ForEach(runner.liveText) { live in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Label(live.label, systemImage: "text.cursor")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    ScrollView {
+                                        Text(live.text.isEmpty ? "…" : live.text)
+                                            .font(.caption.monospaced())
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(8)
+                                    }
+                                    .frame(maxHeight: 180)
+                                    .background(Color(nsColor: .textBackgroundColor))
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityIdentifier("live.\(live.label)")
+                            }
                         }
                         .frame(maxWidth: .infinity, minHeight: 220)
                         .padding(.horizontal, 12)

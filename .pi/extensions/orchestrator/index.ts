@@ -218,7 +218,7 @@ function piAgentsBus(pi: any) {
     });
   }
   return {
-    start: (params: { workflow: string; params: Record<string, string>; label?: string }) =>
+    start: (params: { workflow?: string; flow?: unknown; params?: Record<string, string>; label?: string; display?: string }) =>
       request<{ runId: string; warnings?: string[] }>("start", params),
     stop: (runId: string) => request("stop", { runId }),
     onRunEvent: (handler: (event: unknown) => void) =>
@@ -226,6 +226,81 @@ function piAgentsBus(pi: any) {
         if (envelope?.event) handler(envelope.event);
       }),
   };
+}
+
+// ----------------------------------------------------------------- resume
+
+/**
+ * Top-level step index for a node path. A saved-workflow run's root is a
+ * `workflow` node whose body is the sequence, so steps are `$.body.steps[i]`.
+ * A resumed run is an inline sequence, so steps are `$.steps[k]` and map back
+ * to the original index via the run's resume offset.
+ */
+function topLevelStepIndex(path: string | undefined, resumeOffset: number): number | undefined {
+  if (!path) return undefined;
+  let m = /^\$\.body\.steps\[(\d+)\]$/.exec(path);
+  if (m) return Number(m[1]);
+  m = /^\$\.steps\[(\d+)\]$/.exec(path);
+  if (m) return Number(m[1]) + resumeOffset;
+  return undefined;
+}
+
+/** pi-agents interpolates `{...}` in strings; stored values must be re-submitted literally. */
+function escapeBraces(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(/\{/g, "{{").replace(/\}/g, "}}");
+  if (Array.isArray(value)) return value.map(escapeBraces);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, escapeBraces(v)]));
+  return value;
+}
+
+/** Inline flows carry no params, so `{params.x}` in the remaining steps is replaced with the literal value. */
+function substituteParams(node: unknown, params: Record<string, string>): unknown {
+  if (typeof node === "string") {
+    return node.replace(/\{params\.([A-Za-z0-9_-]+)\}/g, (whole, name: string) =>
+      name in params ? (escapeBraces(params[name]) as string) : whole,
+    );
+  }
+  if (Array.isArray(node)) return node.map((n) => substituteParams(n, params));
+  if (node && typeof node === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(node)) {
+      // Expansion-derived fields cannot be author-supplied; pi-agents re-expands workflow refs by name.
+      if (k === "body" && (node as { kind?: string }).kind === "workflow") continue;
+      if (k === "paramDefs") continue;
+      out[k] = substituteParams(v, params);
+    }
+    return out;
+  }
+  return node;
+}
+
+/**
+ * Build the flow that finishes an interrupted run: `value` nodes re-bind every
+ * completed top-level step's result (an attorney override wins over the stored
+ * value), then the remaining steps run unchanged. A step that was partly done
+ * (a loop mid-iteration, a gate mid-wait) re-runs whole; gates are idempotent.
+ */
+function buildResumeFlow(run: RunRow, completed: Map<number, unknown>, overrides: Map<number, unknown>) {
+  if (!run.flow_json) throw new Error("run has no stored flow (started before resume support)");
+  const flow = JSON.parse(run.flow_json) as { kind: string; body?: { kind: string; steps?: unknown[] }; steps?: unknown[] };
+  const root = flow.kind === "workflow" ? flow.body : flow;
+  if (!root || root.kind !== "sequence" || !Array.isArray(root.steps)) throw new Error("resume supports sequence-rooted workflows");
+  const steps = root.steps as Array<{ as?: string }>;
+  let resumeAt = 0;
+  while (resumeAt < steps.length && (overrides.has(resumeAt) || completed.has(resumeAt))) resumeAt++;
+  if (resumeAt >= steps.length) throw new Error("nothing to resume: every step already completed");
+  const params = JSON.parse(run.params_json) as Record<string, string>;
+  const rebinds = [];
+  for (let i = 0; i < resumeAt; i++) {
+    const as = steps[i].as;
+    if (!as) continue;
+    const value = overrides.has(i) ? overrides.get(i) : completed.get(i);
+    rebinds.push({ kind: "value", value: escapeBraces(value), as, label: `resume:${as}` });
+  }
+  const remaining = steps.slice(resumeAt).map((st) => substituteParams(st, params));
+  // In the rebuilt flow, `$.steps[k]` is original step `k - rebinds.length + resumeAt`.
+  const resumeOffset = resumeAt - rebinds.length;
+  return { flow: { kind: "sequence", steps: [...rebinds, ...remaining] }, resumeAt, resumeOffset, display: run.display ?? undefined };
 }
 
 // -------------------------------------------------------------- extension
@@ -283,7 +358,54 @@ export default function orchestrator(pi: any) {
     if (ctx?.hasUI) ctx.ui.setStatus("orchestratorai", "OrchestratorAI journal active");
   });
 
+  // ------------------------------------------------ live text (child side)
+  // Delegated agents run this same extension. Each one streams what it is
+  // writing into run_progress keyed by its session file; the parent journals
+  // that file in the node_session event, so the app can join the two. Every
+  // stream event carries `partial` (the assistant message so far), and the
+  // deliverable arrives as the arguments of the pi_agents_submit_result tool
+  // call, not as text - so both are rendered. Throttled to ~4 writes/s.
+  let liveSessionFile: string | undefined;
+  let livePending: string | undefined;
+  let liveFlushTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function renderPartial(message: any): string {
+    const parts: string[] = [];
+    for (const c of message?.content ?? []) {
+      if (c?.type === "text" && typeof c.text === "string") parts.push(c.text);
+      else if (c?.type === "toolCall") {
+        const args = c.arguments ?? {};
+        if (c.name === "pi_agents_submit_result") {
+          const result = args.result ?? args.error;
+          parts.push(typeof result === "string" ? result : JSON.stringify(result ?? args, null, 2));
+        } else {
+          parts.push(`[${c.name}] ${JSON.stringify(args).slice(0, 200)}`);
+        }
+      }
+    }
+    return parts.join("\n\n");
+  }
+  function flushLive() {
+    liveFlushTimer = undefined;
+    if (store && liveSessionFile && livePending !== undefined) store.setProgress(liveSessionFile, livePending);
+  }
+  pi.on("agent_start", (_e: unknown, ctx: any) => {
+    liveSessionFile = ctx?.sessionManager?.getSessionFile?.();
+  });
+  pi.on("message_update", (event: any, ctx: any) => {
+    const ev = event?.assistantMessageEvent;
+    if (!ev || !/_delta$/.test(String(ev.type))) return;
+    if (!liveSessionFile) liveSessionFile = ctx?.sessionManager?.getSessionFile?.();
+    livePending = renderPartial(ev.partial ?? event.message);
+    if (!liveFlushTimer) liveFlushTimer = setTimeout(flushLive, 250);
+  });
+  pi.on("agent_settled", () => {
+    if (liveFlushTimer) { clearTimeout(liveFlushTimer); flushLive(); }
+  });
+
   pi.on("session_shutdown", () => {
+    if (liveFlushTimer) { clearTimeout(liveFlushTimer); flushLive(); }
+    if (store && liveSessionFile) store.clearProgress(liveSessionFile);
     store?.close();
     store = undefined;
   });
@@ -298,6 +420,10 @@ export default function orchestrator(pi: any) {
     if (event.type === "run_created" && event.run) headers.set(event.run.id, event.run);
     const run = localRunFor(event, db);
     if (!run) return;
+    if (event.type === "run_created" && event.run) {
+      // Keep the expanded flow: resume rebuilds the remainder of it from stored step values.
+      if (run.resumes === 0) db.setFlow(run.id, event.run.flow, event.run.display);
+    }
 
     const detail =
       event.type === "node_completed"
@@ -317,6 +443,8 @@ export default function orchestrator(pi: any) {
       agent: event.profile,
       label: event.label ?? nodeNames.get(`${event.runId ?? ""}:${event.instance ?? event.path ?? ""}`),
       detail: detail ?? (event.type === "node_session" ? event.sessionFile : undefined),
+      value: event.type === "node_completed" ? event.value : undefined,
+      stepIndex: event.type === "node_completed" ? topLevelStepIndex(event.path, run.resume_offset) : undefined,
     });
 
     if (event.type === "run_completed") {
@@ -391,17 +519,38 @@ export default function orchestrator(pi: any) {
             }
             return;
           }
+          case "resume": {
+            const input = parseJsonArg(rawJson);
+            const runId = typeof input.runId === "string" ? input.runId : "";
+            const row = db.getRun(runId);
+            if (!row) throw new Error(`unknown run '${runId}'`);
+            if (row.status === "completed") throw new Error("run already completed");
+            const { flow, resumeAt, resumeOffset, display } = buildResumeFlow(row, db.completedStepValues(row.id), db.stepOverrides(row.id));
+            db.appendEvent({ runId: row.id, type: "resume", summary: `Resuming from step ${resumeAt + 1} (${row.resumes + 1}${row.resumes === 0 ? "st" : row.resumes === 1 ? "nd" : "th"} resume)` });
+            try {
+              const started = await agents.start({ flow, label: `${row.title} (resumed)`, display } as never);
+              db.markResumed(row.id, started.runId, resumeOffset);
+              piToLocal.set(started.runId, row.id);
+              reply({ ok: true, op: "resume", runId: row.id, piRunId: started.runId, resumeAt, warnings: started.warnings ?? [] });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              db.appendEvent({ runId: row.id, type: "start_failed", summary: `Could not resume — ${message}` });
+              reply({ ok: false, op: "resume", runId: row.id, error: message });
+            }
+            return;
+          }
           case "stop": {
             const input = parseJsonArg(rawJson);
             const runId = typeof input.runId === "string" ? input.runId : "";
             const row = db.getRun(runId);
             if (!row?.pi_run_id) throw new Error(`no live run '${runId}'`);
             await agents.stop(row.pi_run_id);
+            db.cancelPendingCheckpoints(row.id, "Stopped by the user.");
             reply({ ok: true, op: "stop", runId });
             return;
           }
           default:
-            throw new Error("usage: /orchestrator start|stop|ping <json>");
+            throw new Error("usage: /orchestrator start|resume|stop|ping <json>");
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -466,9 +615,11 @@ export default function orchestrator(pi: any) {
       const startedAt = Date.now();
       while (true) {
         if (signal?.aborted) {
-          db.cancelPendingCheckpoints(run.id, "Agent aborted while waiting.");
-          db.appendEvent({ runId: run.id, type: "gate_cancelled", summary: `Gate cancelled — ${params.title}` });
-          throw new Error("attorney_review aborted");
+          // The agent is going away (Pi killed, run stopped) but the attorney has not decided.
+          // Leave the checkpoint pending: a resumed gate step finds it and waits on the same row.
+          // An explicit /orchestrator stop cancels pending checkpoints itself.
+          db.appendEvent({ runId: run.id, type: "gate_interrupted", summary: `Gate interrupted, still awaiting attorney — ${params.title}` });
+          throw new Error("attorney_review interrupted");
         }
         const current = db.getCheckpoint(checkpoint.id);
         if (current && current.status !== "pending") {
@@ -537,6 +688,52 @@ export default function orchestrator(pi: any) {
         content: [{ type: "text", text: JSON.stringify({ decision: result.decision, reason: result.reason, answers: result.answers }, null, 2) }],
         details: { rubric: result.rubric, version: result.version, decision: result.decision },
       };
+    },
+  });
+
+  // ------------------------------------------------------ typed run state
+
+  function resolveRun(db: RunStore, runId: string): RunRow {
+    const run = (runId && (db.getRun(runId) ?? db.findRunByPiId(runId))) || db.latestRunningRun();
+    if (!run) throw new Error("no run to attach state to (pass the run_id from your task)");
+    return run;
+  }
+
+  pi.registerTool({
+    name: "state_update",
+    label: "Update run state",
+    description:
+      "Write to this run's typed state in the store. Reducers are enforced by the store, not by you: " +
+      "'set' replaces, 'append' pushes onto an array, 'merge' overlays object keys. Use it to accumulate " +
+      "results across loop iterations (e.g. append this round's record) instead of carrying the whole " +
+      "history in your own output. Returns the new value and version.",
+    parameters: Type.Object({
+      run_id: Type.String({ description: "The OrchestratorAI run id given in your task; empty if none." }),
+      key: Type.String({ description: "State key, e.g. rounds" }),
+      reducer: Type.Union([Type.Literal("set"), Type.Literal("append"), Type.Literal("merge")]),
+      value: Type.Any({ description: "The value to set, the item(s) to append, or the object to merge." }),
+    }),
+    async execute(_id: string, params: { run_id: string; key: string; reducer: "set" | "append" | "merge"; value: unknown }, _s: AbortSignal | undefined, _u: unknown, ctx: any) {
+      const db = openStore(ctx.cwd);
+      const run = resolveRun(db, params.run_id);
+      const result = db.updateState(run.id, params.key, params.reducer, params.value);
+      db.appendEvent({ runId: run.id, type: "state", summary: `state ${params.reducer} ${params.key} → v${result.version}` });
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: { key: params.key, version: result.version } };
+    },
+  });
+
+  pi.registerTool({
+    name: "state_get",
+    label: "Read run state",
+    description: "Read this run's typed state from the store: one key, or all keys when key is omitted.",
+    parameters: Type.Object({
+      run_id: Type.String({ description: "The OrchestratorAI run id given in your task; empty if none." }),
+      key: Type.Optional(Type.String()),
+    }),
+    async execute(_id: string, params: { run_id: string; key?: string }, _s: AbortSignal | undefined, _u: unknown, ctx: any) {
+      const db = openStore(ctx.cwd);
+      const run = resolveRun(db, params.run_id);
+      return { content: [{ type: "text", text: JSON.stringify(db.getState(run.id, params.key), null, 2) }], details: {} };
     },
   });
 }
