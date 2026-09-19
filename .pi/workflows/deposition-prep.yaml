@@ -86,7 +86,9 @@ flow:
                 profile: depo-answer-coach
                 label: answer-coach
                 task: |-
-                  Coach the witness on the predicted cross-examination below.
+                  Prepare the witness to answer the predicted cross-examination below truthfully and
+                  precisely. Follow your hard rules: write about each question, never in the witness's
+                  voice, and never suggest a characterisation the record does not support.
                   Witness: {params.witness}
                   Case facts: {params.case_facts}
 
@@ -136,7 +138,8 @@ flow:
         Then: ## Executive summary, ## Attorney review focus, ## Themes, ## Questions,
         ## Vulnerabilities, ## Exhibit plan, ## Limitations.
         In Predicted cross-exam mode, title the questions section "## Predicted cross-examination" and add
-        "## Answer coaching" after it.
+        "## Answer preparation" after it. Reproduce the preparation guidance as written - do not convert it
+        into scripted answers, and drop any line that reads as words for the witness to say.
 
         Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`
         (HIGH/MEDIUM/LOW), covering every fact that must be verified against the record and every
