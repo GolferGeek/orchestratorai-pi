@@ -9,9 +9,13 @@ params:
   - { name: knowledge_dir, default: "matters", description: "Folder searched for the matter record" }
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
 doc: |-
-  Composition: case analyst -> switch(mode) { outline: questions -> research -> outline writer |
-  cross-exam: opposing counsel -> predicted cross -> answer coaching } -> report.
-  Ported from orchestratorai-local `legal/workflows/deposition-prep`.
+  Composition: case analyst -> switch(mode) { outline: questions -> research |
+  cross-exam: opposing counsel -> predicted cross } -> report.
+  Ported from orchestratorai-local `legal/workflows/deposition-prep`, with one deliberate omission: Local's
+  answer-coaching node is not reproduced. Three attempts at constraining it (no first-person voice, no
+  supplied characterisations, a required record-quote-first format) all produced guidance that told the
+  witness how to re-frame adverse documents. Predicting the questions and naming the vulnerabilities is
+  useful and safe; scripting the answers is witness coaching, so the step is gone rather than fenced.
 
   ```orchestrator-launch
   title: Deposition Prep
@@ -82,20 +86,6 @@ flow:
 
                   Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
                 as: questions
-              - kind: agent
-                profile: depo-answer-coach
-                label: answer-coach
-                task: |-
-                  Prepare the witness to answer the predicted cross-examination below truthfully and
-                  precisely. Follow your hard rules: write about each question, never in the witness's
-                  voice, and never suggest a characterisation the record does not support.
-                  Witness: {params.witness}
-                  Case facts: {params.case_facts}
-
-                  PREDICTED CROSS-EXAMINATION:
-                  {questions}
-
-                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       else:
         kind: sequence
         steps:
@@ -137,9 +127,13 @@ flow:
         # Deposition prep - [witness name]
         Then: ## Executive summary, ## Attorney review focus, ## Themes, ## Questions,
         ## Vulnerabilities, ## Exhibit plan, ## Limitations.
-        In Predicted cross-exam mode, title the questions section "## Predicted cross-examination" and add
-        "## Answer preparation" after it. Reproduce the preparation guidance as written - do not convert it
-        into scripted answers, and drop any line that reads as words for the witness to say.
+        In Predicted cross-exam mode, title the questions section "## Predicted cross-examination".
+
+        Do NOT write answers, answer guidance, framing, or coaching of any kind, and do not state what a
+        document "really meant". This package tells counsel what is coming; preparing the witness happens
+        with counsel in the room. Under ## Limitations include these two sentences verbatim:
+        "This package contains no suggested answers, by design."
+        "A witness is prepared to testify truthfully by their own lawyer, never from a generated script."
 
         Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`
         (HIGH/MEDIUM/LOW), covering every fact that must be verified against the record and every

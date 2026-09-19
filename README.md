@@ -70,7 +70,7 @@ launch UI. Every one below has completed at least one full run on `qwen3.6` thro
 | `deal-memo` | diligence record | intake → 5 section drafters ∥ → assembly → **gate** → finalize | 1 + final |
 | `adversarial-brief` | brief | analyst → round 1 {blue ×3 ∥ → red ×3 ∥ → judge} → switch(converged? skip : round 2) → synthesis → **gate** → fortify → report | 1 + final |
 | `discovery-review` | folder | inventory → map(coder) → batcher → **privilege** → **relevance** → **hot docs** → **QA sample** → production set + privilege log | 4 + final |
-| `deposition-prep` | typed | case analyst → switch(mode) { outline: questions → research \| cross-exam: opposing counsel → predicted cross → preparation } → report | final review |
+| `deposition-prep` | typed | case analyst → switch(mode) { outline: questions → research \| cross-exam: opposing counsel → predicted cross } → report | final review |
 | `cross-exam-simulation` | typed | strategist → loop(≤5) { question → **gate: you answer as the witness** → scorer } → debrief | one per turn + final |
 | `monte-carlo-trial-simulator` | case record | parameter designer → map(sim) { plaintiff ∥ defence → jury } → statistics → report | final review |
 | `persistent-case-team` | folder | inventory → entities ∥ timeline ∥ index → record writer (rewrites the matter file) → update report | final review |
@@ -80,8 +80,16 @@ launch UI. Every one below has completed at least one full run on `qwen3.6` thro
 | `kb-query` | typed | single cited answer from the knowledge folder | final review |
 
 Ports follow orchestratorai-local's `legal/workflows/*` briefs and its agent-catalog prompts, rewritten
-text-first for local models. Two are honest adaptations rather than literal ports, and say so in their
-`doc:` block: **persistent-case-team** keeps matter state in a Markdown record each run reads and rewrites
+text-first for local models.
+
+**One step is deliberately not ported.** Local's deposition-prep includes an answer-coaching node. Three
+attempts at constraining it here — banning first-person voice, banning supplied characterisations, then
+requiring a format where the adverse document quote precedes any guidance — each produced output telling
+the witness how to re-frame adverse documents. Predicting opposing counsel's questions and naming the
+witness's vulnerabilities is useful and safe and remains; generating per-question answer guidance is
+witness coaching, so the step was removed rather than fenced. Every report says so in its Limitations.
+
+Two workflows are honest adaptations rather than literal ports, and say so in their `doc:` block: **persistent-case-team** keeps matter state in a Markdown record each run reads and rewrites
 (Local uses Postgres), and **sentinel** screens a folder of signal files rather than polling the network.
 
 The launch block's `file:` takes `kind: file` (the default), `kind: folder`, or `kind: none` for
