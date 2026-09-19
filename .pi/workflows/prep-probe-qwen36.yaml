@@ -1,0 +1,44 @@
+name: prep-probe-qwen36
+description: Experiment - run only the witness answer-preparation step on a chosen model, then grade it with the witness-coaching guard. Not a product workflow.
+params:
+  - { name: questions, default: "fixtures/probes/predicted-cross-exam-ruiz.md", description: "File with the predicted cross-examination" }
+  - { name: run_id, default: "" }
+doc: |-
+  Controlled comparison of which local model can write witness preparation that passes the
+  witness-coaching guard. The prep persona and the input are fixed; only `model` varies.
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: depo-answer-prep
+      label: answer-prep
+      model: "ollama/qwen3.6:latest"
+      task: |-
+        Prepare the witness for the predicted cross-examination in the file {params.questions} (read it).
+        One block per question, in your required format. Follow your hard rules.
+        Witness: Dana Ruiz - VP Engineering, Aspen Devices (corporate officer)
+        Case facts: Harbor Peak alleges Aspen used its data-pipeline architecture after an NDA evaluation.
+        Aspen says its engineers relied only on residuals retained in memory. No documents were copied.
+        Documents to quote from are ONLY in the folder fixtures/discovery - list it with find, then read the files you need. Do not read anything outside that folder.
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: prep
+    - kind: agent
+      profile: jev-gate
+      label: coaching-guard
+      task: |-
+        Call jev_check exactly once with rubric "witness-coaching", run_id "{params.run_id}", and
+        inputs set to the complete PREP text below (as a single string). Submit JSON {decision, reason}.
+
+        PREP:
+        {prep}
+      json:
+        type: object
+        required: [decision, reason]
+        properties:
+          decision: { type: string }
+          reason: { type: string }
+        additionalProperties: false
+      as: guard
+    - kind: value
+      value: { model: "ollama/qwen3.6:latest", decision: "{guard.decision}", reason: "{guard.reason}", prep: "{prep}" }

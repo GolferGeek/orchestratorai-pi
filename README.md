@@ -96,6 +96,13 @@ Two workflows are honest adaptations rather than literal ports, and say so in th
 The launch block's `file:` takes `kind: file` (the default), `kind: folder`, or `kind: none` for
 workflows driven entirely by typed fields.
 
+**Which local model, per node.** `model:` is a per-node option, so judgment-heavy single steps and
+fan-out workers can differ. On the witness-preparation probe (same task, same guard): qwen3.6 scripted
+testimony every time; qwen3.8 obeyed the rules into paralysis and never delivered; **qwen3-coder-next
+(80B)** followed the format, quoted the record, and passed the guard in four minutes - despite the name,
+it is the newest and largest model on the machine. `.pi/workflows/prep-probe-*.yaml` are the probes;
+the models must be registered in `~/.pi/agent/models.json` for an explicit `model:` to validate.
+
 **Local-model rule of thumb:** pi-agents requires every agent to finish by calling
 `pi_agents_submit_result`; local models drop that when the prompt gets very large. Keep each node's
 context bounded (no accumulating records across loop iterations — unroll instead), put the delivery

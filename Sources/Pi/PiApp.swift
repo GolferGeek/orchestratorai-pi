@@ -34,7 +34,9 @@ struct ContentView: View {
     @State private var gateDecisionComment = ""
     @State private var runPendingDeletion: RunRecord?
     @State private var showingDeleteConfirmation = false
-    @State private var legalWorkflowsExpanded = true
+    @State private var runsPendingClear: [RunRecord] = []
+    @State private var showingClearApprovedConfirmation = false
+    @State private var sidebarSelection: SidebarSelection? = .workflow("contract-review")
     @State private var expandedGroups: Set<String> = Set(LegalWorkflowCatalog.groups.map(\.id))
     @State private var projectDirectory = PiEnvironment.findProjectDirectory()
     @State private var projectTrusted = false
@@ -58,27 +60,55 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            workflowSidebar
-        } detail: {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 22) {
-                        if !projectTrusted { trustCard }
-                        if runner.storeUnavailable { storeCard }
-                        taskCard
-                        if let workflow = activeWorkflow, workflow.isReady || displayedRun != nil {
-                            contextCard
-                            sourceDocumentCard
-                            gateCard
-                            attorneyReviewCard
-                            resultCard
-                            humanReviewCard
-                        }
-                    }
-                    .padding(28)
+            SidebarView(
+                runner: runner,
+                workflows: workflows,
+                selection: $sidebarSelection,
+                expandedGroups: $expandedGroups
+            )
+        } content: {
+            RunListView(
+                runner: runner,
+                selection: sidebarSelection,
+                workflow: sidebarSelection?.workflowId.flatMap { id in workflows.first(where: { $0.id == id }) },
+                onOpen: openRun,
+                onNewRun: startNewRun,
+                onDelete: { run in
+                    runPendingDeletion = run
+                    showingDeleteConfirmation = true
+                },
+                onClearApproved: { runs in
+                    guard !runs.isEmpty else { return }
+                    runsPendingClear = runs
+                    showingClearApprovedConfirmation = true
                 }
+            )
+        } detail: {
+            if sidebarSelection == .inbox, runner.selectedRun == nil {
+                inboxPlaceholder
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 22) {
+                            if !projectTrusted { trustCard }
+                            if runner.storeUnavailable { storeCard }
+                            taskCard
+                            if let workflow = activeWorkflow, workflow.isReady || displayedRun != nil {
+                                contextCard
+                                sourceDocumentCard
+                                gateCard
+                                attorneyReviewCard
+                                resultCard
+                                EvaluationsCard(evaluations: runner.evaluations)
+                                humanReviewCard
+                            }
+                        }
+                        .padding(28)
+                    }
+                }
+                .frame(minWidth: 400)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -90,7 +120,14 @@ struct ContentView: View {
             } else if let firstReady = workflows.first(where: \.isReady) {
                 selectedWorkflow = firstReady.id
             }
+            sidebarSelection = .workflow(selectedWorkflow)
             resetParams()
+        }
+        .onChange(of: sidebarSelection) { _, newValue in
+            // Inbox keeps whatever run is open; a catalog row switches the active workflow.
+            if case .workflow(let id) = newValue {
+                selectedWorkflow = id
+            }
         }
         .onChange(of: selectedWorkflow) { _, _ in
             reviewedIssueIDs = []
@@ -128,6 +165,15 @@ struct ContentView: View {
         } message: {
             Text("This permanently removes the run, its journal, and its attorney checkpoints from the on-device store.\n\n\(runPendingDeletion?.title ?? "This run")")
         }
+        .alert("Clear approved runs?", isPresented: $showingClearApprovedConfirmation) {
+            Button("Delete \(runsPendingClear.count) Approved", role: .destructive) {
+                for run in runsPendingClear { runner.deleteRun(run) }
+                runsPendingClear = []
+            }
+            Button("Cancel", role: .cancel) { runsPendingClear = [] }
+        } message: {
+            Text("This permanently removes \(runsPendingClear.count) approved run\(runsPendingClear.count == 1 ? "" : "s") in this list, with their journals and attorney checkpoints, from the on-device store.")
+        }
     }
 
     private func reloadProject() {
@@ -140,138 +186,34 @@ struct ContentView: View {
         paramValues = activeWorkflow?.launch?.initialValues() ?? [:]
     }
 
-    // MARK: Sidebar
+    // MARK: Selection
 
-    private var workflowSidebar: some View {
-        List(selection: $selectedWorkflow) {
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Button {
-                        legalWorkflowsExpanded.toggle()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: legalWorkflowsExpanded ? "chevron.down" : "chevron.right")
-                                .font(.caption.weight(.bold))
-                            Label("Legal workflows", systemImage: "doc.text.magnifyingglass")
-                                .font(.headline)
-                            Spacer(minLength: 0)
-                            Text("\(workflows.filter(\.isReady).count)/\(workflows.count) ready")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-
-                    if legalWorkflowsExpanded {
-                        ForEach(LegalWorkflowCatalog.groups) { group in
-                            let items = workflows.filter { $0.groupId == group.id }
-                            if !items.isEmpty {
-                                Button {
-                                    if expandedGroups.contains(group.id) {
-                                        expandedGroups.remove(group.id)
-                                    } else {
-                                        expandedGroups.insert(group.id)
-                                    }
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: expandedGroups.contains(group.id) ? "chevron.down" : "chevron.right")
-                                            .font(.caption.weight(.bold))
-                                        Text(group.name)
-                                            .font(.subheadline.weight(.semibold))
-                                    }
-                                    .padding(.leading, 18)
-                                }
-                                .buttonStyle(.plain)
-
-                                if expandedGroups.contains(group.id) {
-                                    ForEach(items) { workflow in
-                                        workflowRow(workflow)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    runList(title: "Needs attention", runs: runner.attentionRuns, empty: "No runs awaiting action")
-                    runList(title: "Approved", runs: runner.completedRuns, empty: "No approved runs")
-                }
-                .padding(.vertical, 4)
-            }
+    /// Inbox with nothing open: the detail has no workflow to frame, so say so.
+    private var inboxPlaceholder: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "tray")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text("Select a run")
+                .font(.headline)
+            Text("Pick a run from the list to review it, or choose a workflow in the sidebar to start a new one.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
-        .listStyle(.sidebar)
-        .navigationTitle("Workflows")
-        .frame(minWidth: 260)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(28)
+        .frame(minWidth: 400)
     }
 
-    private func workflowRow(_ workflow: WorkflowDefinition) -> some View {
-        Button {
-            selectedWorkflow = workflow.id
-        } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Label(workflow.title, systemImage: workflow.icon)
-                        .font(.callout)
-                    Spacer(minLength: 0)
-                    Text(workflow.status.label)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(workflow.isReady ? Color.green.opacity(0.18) : Color.secondary.opacity(0.14))
-                        .foregroundStyle(workflow.isReady ? Color.green : Color.secondary)
-                        .clipShape(Capsule())
-                }
-                Text(workflow.description)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 24)
-            }
-            .padding(.leading, 36)
-        }
-        .buttonStyle(.plain)
-        .tag(workflow.id)
-    }
-
-    @ViewBuilder
-    private func runList(title: String, runs: [RunRecord], empty: String) -> some View {
-        Text(title)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.top, 8)
-        if runs.isEmpty {
-            Text(empty)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        } else {
-            ForEach(runs) { run in
-                let state = runner.reviewState(for: run)
-                HStack(spacing: 6) {
-                    Button {
-                        openRun(run)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(run.title)
-                                .font(.caption.weight(run.id == runner.selectedRunId ? .semibold : .regular))
-                                .lineLimit(1)
-                            Text("\(state.label) · \(Self.displayDate(run.completedAt ?? run.createdAt))")
-                                .font(.caption2)
-                                .foregroundStyle(state.isLive ? Color.orange : Color.secondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    Spacer(minLength: 0)
-                    Button {
-                        runPendingDeletion = run
-                        showingDeleteConfirmation = true
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Delete this run and its journal")
-                }
-            }
-        }
+    /// "New run" in the list: drop the open run so the detail shows the bare launch card.
+    private func startNewRun() {
+        reviewedIssueIDs = []
+        reviewDecisionComment = ""
+        gateDecisionComment = ""
+        selectedFile = nil
+        runner.select(runId: nil)
+        resetParams()
     }
 
     private func openRun(_ run: RunRecord) {
@@ -341,6 +283,7 @@ struct ContentView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("trust.approve")
             }
             .padding(8)
         }
@@ -420,6 +363,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.bordered)
+            .accessibilityIdentifier("launch.choose_file")
         } else {
             Text("No document upload — fill in the fields below, then start.")
                 .font(.caption)
@@ -464,6 +408,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(!exists)
+                    .accessibilityIdentifier("launch.sample.\(sample.id)")
                 }
             }
         }
@@ -476,11 +421,13 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(!canStart(launch) || runner.isRunning || !projectTrusted)
+            .accessibilityIdentifier("launch.start")
 
             if runner.isRunning {
                 Button("Stop", role: .destructive) {
                     runner.stop()
                 }
+                .accessibilityIdentifier("launch.stop")
             }
         }
     }
@@ -521,14 +468,17 @@ struct ContentView: View {
                                         ForEach(field.options, id: \.self) { Text($0).tag($0) }
                                     }
                                     .labelsHidden()
+                                    .accessibilityIdentifier("context.field.\(field.param)")
                                 case .line:
                                     TextField(field.label, text: binding(for: field.param))
                                         .textFieldStyle(.roundedBorder)
+                                        .accessibilityIdentifier("context.field.\(field.param)")
                                 case .text:
                                     TextEditor(text: binding(for: field.param))
                                         .font(.body)
                                         .frame(minHeight: 68)
                                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                                        .accessibilityIdentifier("context.field.\(field.param)")
                                 }
                             }
                         }
@@ -538,6 +488,7 @@ struct ContentView: View {
                                 .frame(width: 90, alignment: .leading)
                             TextField("Ollama model", text: $model)
                                 .textFieldStyle(.roundedBorder)
+                                .accessibilityIdentifier("context.model")
                             Text("Ollama")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -613,6 +564,7 @@ struct ContentView: View {
 
                         TextField("Direction for the next step (optional)…", text: $gateDecisionComment)
                             .textFieldStyle(.roundedBorder)
+                            .accessibilityIdentifier("gate.comment")
 
                         HStack {
                             Button("Approve and continue") {
@@ -620,11 +572,13 @@ struct ContentView: View {
                                 gateDecisionComment = ""
                             }
                             .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("gate.approve")
                             Button("Request changes and continue") {
                                 runner.decide(checkpoint: gate, approved: false, comment: gateDecisionComment)
                                 gateDecisionComment = ""
                             }
                             .buttonStyle(.bordered)
+                            .accessibilityIdentifier("gate.request_changes")
                         }
                     }
                     .padding(8)
@@ -657,6 +611,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderless)
                     .disabled(finalMarkdown.isEmpty)
+                    .accessibilityIdentifier("report.save")
                 }
 
                 if let run = displayedRun, let state = displayedState {
@@ -861,6 +816,7 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                                 TextField("Optional note for the matter file…", text: $reviewDecisionComment)
                                     .textFieldStyle(.roundedBorder)
+                                    .accessibilityIdentifier("review.comment")
                             }
 
                             HStack {
@@ -869,12 +825,14 @@ struct ContentView: View {
                                     reviewDecisionComment = ""
                                 }
                                 .buttonStyle(.borderedProminent)
+                                .accessibilityIdentifier("review.approve")
 
                                 Button("Request changes") {
                                     runner.decide(checkpoint: pendingFinal, approved: false, comment: reviewDecisionComment)
                                     reviewDecisionComment = ""
                                 }
                                 .buttonStyle(.bordered)
+                                .accessibilityIdentifier("review.request_changes")
                             }
 
                             if !allReviewed && !items.isEmpty {
@@ -912,6 +870,7 @@ struct ContentView: View {
                                 runner.reopenReview(runId: run.id)
                             }
                             .buttonStyle(.bordered)
+                            .accessibilityIdentifier("review.reopen")
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
@@ -1076,7 +1035,7 @@ struct ContentView: View {
         return result.isEmpty ? text : result
     }
 
-    private static func displayDate(_ value: String) -> String {
+    static func displayDate(_ value: String) -> String {
         guard let date = parseDate(value) else { return value }
         let display = DateFormatter()
         display.dateStyle = .medium

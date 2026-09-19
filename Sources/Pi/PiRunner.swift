@@ -10,6 +10,8 @@ final class PiRunner: ObservableObject {
     @Published var checkpointsByRun: [String: [CheckpointRecord]] = [:]
     @Published var selectedRunId: String?
     @Published var events: [RunEventRecord] = []
+    @Published var evaluations: [EvaluationRecord] = []
+    @Published var evaluationCounts: [String: (block: Int, review: Int, pass: Int)] = [:]
     @Published var status = "Ready"
     @Published var isRunning = false
     @Published var errorMessage: String?
@@ -34,6 +36,15 @@ final class PiRunner: ObservableObject {
 
     func reviewState(for run: RunRecord) -> ReviewState {
         store?.reviewState(for: run, checkpoints: checkpoints(for: run.id)) ?? .queued
+    }
+
+    /// The most severe Jev decision recorded for a run: block > review > pass; nil when no rubric ran.
+    func worstDecision(for runId: String) -> String? {
+        guard let counts = evaluationCounts[runId] else { return nil }
+        if counts.block > 0 { return "block" }
+        if counts.review > 0 { return "review" }
+        if counts.pass > 0 { return "pass" }
+        return nil
     }
 
     var attentionRuns: [RunRecord] {
@@ -61,10 +72,13 @@ final class PiRunner: ObservableObject {
         var map: [String: [CheckpointRecord]] = [:]
         for run in runs { map[run.id] = store.checkpoints(runId: run.id) }
         checkpointsByRun = map
+        evaluationCounts = store.evaluationSummary()
         if let selectedRunId {
             events = store.events(runId: selectedRunId)
+            evaluations = store.evaluations(runId: selectedRunId)
         } else {
             events = []
+            evaluations = []
         }
         if let activeRunId, let run = runs.first(where: { $0.id == activeRunId }) {
             let state = reviewState(for: run)

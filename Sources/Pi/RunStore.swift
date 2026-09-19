@@ -55,6 +55,59 @@ struct CheckpointRecord: Identifiable, Hashable {
     var isGate: Bool { kind == "gate" }
 }
 
+/// One calibrated answer from a Jev rubric question, reduced to its headline numbers.
+struct EvaluationAnswer: Hashable {
+    enum Kind: String, Hashable {
+        case noul, score, choice
+    }
+
+    let questionId: String
+    let kind: Kind
+    /// Probability the statement is true (`noul` answers only).
+    let noul: Double?
+    /// Probability-weighted level (`score` answers only).
+    let score: Double?
+    /// Selected option (`choice` answers only).
+    let choice: String?
+    /// Calibrated confidence (`score` and `choice` answers; nouls carry none).
+    let confidence: Double?
+
+    /// e.g. `scripts_testimony 0.97`, `level 2.00 @1.00`, `severity HIGH @0.90`.
+    var headline: String {
+        func two(_ value: Double) -> String { String(format: "%.2f", value) }
+        let tail: String
+        switch kind {
+        case .noul:
+            tail = noul.map(two) ?? "?"
+        case .score:
+            tail = (score.map(two) ?? "?") + (confidence.map { " @" + two($0) } ?? "")
+        case .choice:
+            tail = (choice ?? "?") + (confidence.map { " @" + two($0) } ?? "")
+        }
+        return "\(questionId) \(tail)"
+    }
+}
+
+/// A Jev rubric check recorded against a run (`evaluations` table).
+struct EvaluationRecord: Identifiable, Hashable {
+    let id: String
+    let runId: String?
+    let rubric: String
+    let rubricVersion: Int
+    let decision: String        // pass | review | block
+    let reason: String?
+    let answers: [EvaluationAnswer]
+    let answersJSON: String
+    let statePreview: String?
+    let model: String?
+    let inputTokens: Int?
+    let outputTokens: Int?
+    let at: String
+
+    var isBlock: Bool { decision == "block" }
+    var isReview: Bool { decision == "review" }
+}
+
 /// Attorney-facing state derived from the engine status plus checkpoints.
 enum ReviewState: Hashable {
     case queued
@@ -136,6 +189,12 @@ final class RunStore {
       decided_at TEXT, node_instance TEXT
     );
     CREATE INDEX IF NOT EXISTS checkpoints_run ON checkpoints(run_id, requested_at);
+    CREATE TABLE IF NOT EXISTS evaluations (
+      id TEXT PRIMARY KEY, run_id TEXT, rubric TEXT NOT NULL, rubric_version INTEGER NOT NULL,
+      decision TEXT NOT NULL, reason TEXT, answers_json TEXT NOT NULL, state_preview TEXT,
+      model TEXT, input_tokens INTEGER, output_tokens INTEGER, at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS evaluations_run ON evaluations(run_id, at);
     """
 
     // MARK: Reads
@@ -169,6 +228,36 @@ final class RunStore {
 
     func pendingCheckpoints() -> [CheckpointRecord] {
         query("SELECT * FROM checkpoints WHERE status = 'pending' ORDER BY requested_at") { Self.checkpoint(from: $0) }
+    }
+
+    func evaluations(runId: String) -> [EvaluationRecord] {
+        query("SELECT * FROM evaluations WHERE run_id = ? ORDER BY at", bind: [runId]) { Self.evaluation(from: $0) }
+    }
+
+    /// Decision counts per run, in one pass over the table.
+    func evaluationSummary() -> [String: (block: Int, review: Int, pass: Int)] {
+        let rows: [(String, Int, Int, Int)] = query(
+            """
+            SELECT run_id,
+                   SUM(CASE WHEN decision = 'block' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN decision = 'review' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN decision = 'pass' THEN 1 ELSE 0 END)
+            FROM evaluations WHERE run_id IS NOT NULL GROUP BY run_id
+            """
+        ) { stmt in
+            guard let runId = Self.text(stmt, 0) else { return nil }
+            return (
+                runId,
+                Int(sqlite3_column_int64(stmt, 1)),
+                Int(sqlite3_column_int64(stmt, 2)),
+                Int(sqlite3_column_int64(stmt, 3))
+            )
+        }
+        var summary: [String: (block: Int, review: Int, pass: Int)] = [:]
+        for (runId, block, review, pass) in rows {
+            summary[runId] = (block: block, review: review, pass: pass)
+        }
+        return summary
     }
 
     func reviewState(for run: RunRecord, checkpoints: [CheckpointRecord]) -> ReviewState {
@@ -217,6 +306,7 @@ final class RunStore {
     func deleteRun(id: String) -> Bool {
         execute("DELETE FROM run_events WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM checkpoints WHERE run_id = ?", bind: [id])
+            && execute("DELETE FROM evaluations WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM runs WHERE id = ?", bind: [id])
     }
 
@@ -330,5 +420,47 @@ final class RunStore {
             requestedAt: text(stmt, named: "requested_at") ?? "",
             decidedAt: text(stmt, named: "decided_at")
         )
+    }
+
+    private static func evaluation(from stmt: OpaquePointer) -> EvaluationRecord? {
+        guard let id = text(stmt, named: "id") else { return nil }
+        let answersJSON = text(stmt, named: "answers_json") ?? "{}"
+        return EvaluationRecord(
+            id: id,
+            runId: text(stmt, named: "run_id"),
+            rubric: text(stmt, named: "rubric") ?? "",
+            rubricVersion: int(stmt, named: "rubric_version") ?? 0,
+            decision: text(stmt, named: "decision") ?? "review",
+            reason: text(stmt, named: "reason"),
+            answers: answers(fromJSON: answersJSON),
+            answersJSON: answersJSON,
+            statePreview: text(stmt, named: "state_preview"),
+            model: text(stmt, named: "model"),
+            inputTokens: int(stmt, named: "input_tokens"),
+            outputTokens: int(stmt, named: "output_tokens"),
+            at: text(stmt, named: "at") ?? ""
+        )
+    }
+
+    /// `{ "<questionId>": { "type": "noul", "noul": 0.97 } | { "type": "score", "score": 2.0, "confidence": 1.0, ... } | { "type": "choice", "choice": "x", "confidence": 0.9, ... } }`
+    private static func answers(fromJSON json: String) -> [EvaluationAnswer] {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else { return [] }
+        func number(_ value: Any?) -> Double? {
+            if let number = value as? NSNumber { return number.doubleValue }
+            if let string = value as? String { return Double(string) }
+            return nil
+        }
+        return object.keys.sorted().compactMap { questionId in
+            guard let answer = object[questionId] as? [String: Any],
+                  let kind = (answer["type"] as? String).flatMap(EvaluationAnswer.Kind.init(rawValue:)) else { return nil }
+            return EvaluationAnswer(
+                questionId: questionId,
+                kind: kind,
+                noul: kind == .noul ? number(answer["noul"]) : nil,
+                score: kind == .score ? number(answer["score"]) : nil,
+                choice: kind == .choice ? answer["choice"] as? String : nil,
+                confidence: kind == .noul ? nil : number(answer["confidence"])
+            )
+        }
     }
 }
