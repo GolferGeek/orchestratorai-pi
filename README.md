@@ -12,7 +12,7 @@ This project is intentionally not a second web platform. Pi supplies the interac
 .pi/skills/               legal skills loaded by personas
 knowledge/frameworks/     GDPR / HIPAA / SOX text the compliance evaluators cite
 .pi/extensions/orchestrator/
-  index.ts                /orchestrator start|stop|ping, run journal, attorney_review tool
+  index.ts                /orchestrator start|stop|ping, run journal, attorney_review + jev_check tools
   store.ts                SQLite schema + writer (node:sqlite, no native deps)
 data/orchestrator.sqlite  on-device run store (git-ignored); the app reads it
 Sources/Pi/               SwiftUI shell: catalog, launch, journal, HITL checkpoints
@@ -82,12 +82,13 @@ launch UI. Every one below has completed at least one full run on `qwen3.6` thro
 Ports follow orchestratorai-local's `legal/workflows/*` briefs and its agent-catalog prompts, rewritten
 text-first for local models.
 
-**One step is deliberately not ported.** Local's deposition-prep includes an answer-coaching node. Three
-attempts at constraining it here — banning first-person voice, banning supplied characterisations, then
-requiring a format where the adverse document quote precedes any guidance — each produced output telling
-the witness how to re-frame adverse documents. Predicting opposing counsel's questions and naming the
-witness's vulnerabilities is useful and safe and remains; generating per-question answer guidance is
-witness coaching, so the step was removed rather than fenced. Every report says so in its Limitations.
+**One step is guarded by a classifier, not a prompt.** Local's deposition-prep includes an answer-coaching
+node. Five attempts at constraining it with prompt rules each produced text telling the witness how to
+re-frame adverse documents — the local model ignores rules about its own output. The step now runs behind
+`jev_check` (the `witness-coaching` rubric from the sibling **orchestratorai-jev** repo): the workflow
+switches on the calibrated decision — `pass` ships it, `review` shows it to counsel at a gate, `block`
+omits it and the report says why. In the first guarded run Jev blocked it at confidence 1.00. Every
+evaluation is recorded in the store's `evaluations` table. See [docs/jev.md](docs/jev.md).
 
 Two workflows are honest adaptations rather than literal ports, and say so in their `doc:` block: **persistent-case-team** keeps matter state in a Markdown record each run reads and rewrites
 (Local uses Postgres), and **sentinel** screens a folder of signal files rather than polling the network.
@@ -110,4 +111,4 @@ edge cases), `fixtures/litigation` (a motion to dismiss and a structured case re
 
 ## Store schema
 
-`runs` (one per launch; engine status, params, final Markdown/JSON) · `run_events` (journal) · `checkpoints` (gate / final_review with attorney decision). The Swift reader and the TypeScript writer share the schema; see `.pi/extensions/orchestrator/store.ts`.
+`runs` (one per launch; engine status, params, final Markdown/JSON) · `run_events` (journal) · `checkpoints` (gate / final_review with attorney decision) · `evaluations` (every Jev rubric decision, with answers and confidence). The Swift reader and the TypeScript writer share the schema; see `.pi/extensions/orchestrator/store.ts`.

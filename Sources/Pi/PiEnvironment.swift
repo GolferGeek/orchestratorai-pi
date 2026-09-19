@@ -45,8 +45,30 @@ enum PiEnvironment {
     /// PATH for the Pi process: pi-agents spawns delegated `pi` children by
     /// name, and pi's own launcher needs `node`, so both directories must be
     /// on PATH even when the app was opened from Finder.
-    static func processEnvironment(piExecutable: String) -> [String: String] {
+    /// Simple KEY=VALUE parser for the project's gitignored `.env`, so a Finder-launched
+    /// app still hands secrets (TYPESAFE_API_KEY for the Jev guard) to the Pi process.
+    /// Existing process environment wins over the file.
+    static func dotEnv(projectDirectory: URL) -> [String: String] {
+        guard let text = try? String(contentsOf: projectDirectory.appendingPathComponent(".env"), encoding: .utf8) else { return [:] }
+        var out: [String: String] = [:]
+        for raw in text.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
+            let key = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
+            var value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+            if value.count >= 2, (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
+                value = String(value.dropFirst().dropLast())
+            }
+            if !key.isEmpty { out[key] = value }
+        }
+        return out
+    }
+
+    static func processEnvironment(piExecutable: String, projectDirectory: URL? = nil) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
+        if let projectDirectory {
+            for (k, v) in dotEnv(projectDirectory: projectDirectory) where env[k] == nil { env[k] = v }
+        }
         let fileManager = FileManager.default
         let resolvedPi = URL(fileURLWithPath: piExecutable).resolvingSymlinksInPath().deletingLastPathComponent().path
         let piDir = URL(fileURLWithPath: piExecutable).deletingLastPathComponent().path

@@ -1,5 +1,5 @@
 name: deposition-prep
-description: Prepare for a deposition from witness details and case facts. Produces a preparation outline with themes, predicted questions, vulnerabilities and an exhibit plan - or switches to predicted-cross-exam mode for opposing counsel's likely attack lines. Contains no suggested answers by design.
+description: Prepare for a deposition from witness details and case facts. Produces a preparation outline with themes, predicted questions, vulnerabilities and an exhibit plan - or switches to predicted-cross-exam mode for opposing counsel's likely attack lines with answer preparation that only ships if the witness-coaching guard passes it.
 trigger: when the user asks to prepare for a deposition or to predict cross-examination of a witness
 params:
   - { name: witness, required: true, description: "Witness name and type (corporate officer, expert, fact witness)" }
@@ -10,12 +10,13 @@ params:
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
 doc: |-
   Composition: case analyst -> switch(mode) { outline: questions -> research |
-  cross-exam: opposing counsel -> predicted cross } -> report.
-  Ported from orchestratorai-local `legal/workflows/deposition-prep`, with one deliberate omission: Local's
-  answer-coaching node is not reproduced. Three attempts at constraining it (no first-person voice, no
-  supplied characterisations, a required record-quote-first format) all produced guidance that told the
-  witness how to re-frame adverse documents. Predicting the questions and naming the vulnerabilities is
-  useful and safe; scripting the answers is witness coaching, so the step is gone rather than fenced.
+  cross-exam: opposing counsel -> predicted cross -> answer prep -> **Jev guard** -> switch(decision) } -> report.
+  Ported from orchestratorai-local `legal/workflows/deposition-prep`. The answer-preparation step was
+  removed once: three rounds of prompt rules could not stop a local model from scripting testimony.
+  It is back behind a typed guard - `jev_check` runs the `witness-coaching` rubric (orchestratorai-jev)
+  over the prep text and the workflow switches on the decision: pass -> included; review -> shown to the
+  attorney at a gate before inclusion; block -> omitted and the report says why. The generative step is
+  still an LLM; what changed is that a calibrated classifier, not a prompt, decides whether it ships.
 
   ```orchestrator-launch
   title: Deposition Prep
@@ -86,6 +87,71 @@ flow:
 
                   Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
                 as: questions
+              - kind: agent
+                profile: depo-answer-prep
+                label: answer-prep
+                task: |-
+                  Prepare the witness for the predicted cross-examination below, one block per question,
+                  in your required format. Follow your hard rules.
+                  Witness: {params.witness}
+                  Case facts: {params.case_facts}
+                  Documents to quote from: search {params.knowledge_dir} with find/grep/read.
+
+                  PREDICTED CROSS-EXAMINATION:
+                  {questions}
+
+                  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+                as: prep
+              - kind: agent
+                profile: jev-gate
+                label: coaching-guard
+                task: |-
+                  Call jev_check exactly once with rubric "witness-coaching", run_id "{params.run_id}", and
+                  inputs set to the complete PREP text below (as a single string). Submit JSON {decision, reason}.
+
+                  PREP:
+                  {prep}
+                json:
+                  type: object
+                  required: [decision, reason]
+                  properties:
+                    decision: { type: string }
+                    reason: { type: string }
+                  additionalProperties: false
+                as: guard
+              - kind: switch
+                label: prep-routing
+                on: "{guard}"
+                cases:
+                  - when: { eq: [decision, pass] }
+                    then:
+                      kind: value
+                      value: { status: included, prep: "{prep}", guard: "{guard.reason}" }
+                  - when: { eq: [decision, review] }
+                    then:
+                      kind: sequence
+                      steps:
+                        - kind: agent
+                          profile: attorney-gate
+                          label: prep-review-gate
+                          task: |-
+                            Call the attorney_review tool exactly once with:
+                            - run_id: "{params.run_id}"
+                            - title: "Witness preparation flagged for review"
+                            - summary: one line "The coaching guard flagged this preparation text ({guard.reason}). Approve to include it in the package, or request changes to omit it." followed by the complete PREP text below.
+                            Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+
+                            PREP:
+                            {prep}
+                          as: attorney
+                        - kind: value
+                          value: { status: reviewed, prep: "{prep}", guard: "{guard.reason}", attorney: "{attorney}" }
+                else:
+                  kind: value
+                  value: { status: omitted, prep: "", guard: "{guard.reason}" }
+                as: prep_decision
+              - kind: value
+                value: { questions: "{questions}", prep: "{prep_decision}" }
       else:
         kind: sequence
         steps:
@@ -127,13 +193,16 @@ flow:
         # Deposition prep - [witness name]
         Then: ## Executive summary, ## Attorney review focus, ## Themes, ## Questions,
         ## Vulnerabilities, ## Exhibit plan, ## Limitations.
-        In Predicted cross-exam mode, title the questions section "## Predicted cross-examination".
-
-        Do NOT write answers, answer guidance, framing, or coaching of any kind, and do not state what a
-        document "really meant". This package tells counsel what is coming; preparing the witness happens
-        with counsel in the room. Under ## Limitations include these two sentences verbatim:
-        "This package contains no suggested answers, by design."
-        "A witness is prepared to testify truthfully by their own lawyer, never from a generated script."
+        In Predicted cross-exam mode the WORKSTREAM OUTPUT is an object with `questions` and `prep`. Title
+        the questions section "## Predicted cross-examination". Then handle `prep` by its `status`:
+        - included: add "## Answer preparation" reproducing prep.prep verbatim, and note under
+          ## Limitations that it passed the witness-coaching guard.
+        - reviewed: add "## Answer preparation" only if prep.attorney contains "DECISION: approved";
+          otherwise omit it. Under ## Limitations record the guard reason and the attorney decision.
+        - omitted: do not add any preparation section. Under ## Limitations say: "Answer preparation was
+          generated and withheld: the witness-coaching guard found it would script or re-frame testimony
+          (<guard reason>). A witness is prepared to testify truthfully by their own lawyer."
+        Never write answers, framing, or coaching yourself, and never state what a document "really meant".
 
         Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`
         (HIGH/MEDIUM/LOW), covering every fact that must be verified against the record and every

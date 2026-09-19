@@ -15,3 +15,4 @@ matters/**/client-material/
 matters/**/real/
 data/orchestrator.sqlite*
 .claude/
+.pi/extensions/orchestrator/node_modules/

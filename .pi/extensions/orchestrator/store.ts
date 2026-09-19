@@ -125,6 +125,22 @@ CREATE TABLE IF NOT EXISTS checkpoints (
   node_instance TEXT
 );
 CREATE INDEX IF NOT EXISTS checkpoints_run ON checkpoints(run_id, requested_at);
+
+CREATE TABLE IF NOT EXISTS evaluations (
+  id TEXT PRIMARY KEY,
+  run_id TEXT,
+  rubric TEXT NOT NULL,
+  rubric_version INTEGER NOT NULL,
+  decision TEXT NOT NULL,
+  reason TEXT,
+  answers_json TEXT NOT NULL,
+  state_preview TEXT,
+  model TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS evaluations_run ON evaluations(run_id, at);
 `;
 
 function nowIso(at?: number): string {
@@ -311,6 +327,34 @@ export class RunStore {
         "SELECT * FROM checkpoints WHERE run_id = ? AND title = ? ORDER BY requested_at DESC LIMIT 1",
       )
       .get(runId, title) as CheckpointRow | undefined;
+  }
+
+  // ---------------------------------------------------------- evaluations
+
+  /** A Jev rubric result, recorded so the app can badge runs and the harness can grade history. */
+  recordEvaluation(input: {
+    id: string;
+    runId?: string;
+    rubric: string;
+    rubricVersion: number;
+    decision: string;
+    reason?: string;
+    answers: unknown;
+    statePreview?: string;
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO evaluations (id, run_id, rubric, rubric_version, decision, reason, answers_json, state_preview, model, input_tokens, output_tokens, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.id, input.runId ?? null, input.rubric, input.rubricVersion, input.decision, input.reason ?? null,
+        JSON.stringify(input.answers), input.statePreview ?? null, input.model ?? null,
+        input.inputTokens ?? null, input.outputTokens ?? null, nowIso(),
+      );
   }
 
   cancelPendingCheckpoints(runId: string, reason: string): void {

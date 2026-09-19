@@ -13,7 +13,13 @@
  *    smuggled through the RPC UI channel.
  *
  * 3. `attorney_review` tool — a human-in-the-loop gate that a workflow agent
- *    can call mid-flow. It records a pending checkpoint and blocks until the
+ *    can call mid-flow.
+ *
+ * 4. `jev_check` tool — runs a named rubric from the orchestratorai-jev
+ *    library against text and returns a routed decision (pass | review |
+ *    block) with calibrated answers. Pi has no MCP by design, so the extension
+ *    links jev-core directly; the rubrics are the same files the MCP serves.
+ *    Every evaluation is recorded in the store. It records a pending checkpoint and blocks until the
  *    attorney approves or requests changes in the app. Delegated agents run in
  *    this same project, so they load this extension and see the tool.
  */
@@ -23,6 +29,8 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import { RunStore, type RunRow } from "./store";
+import { JevClient, runRubric, type Rubric } from "@orchestratorai/jev-core";
+import { loadRubricDir, defaultRubricDir } from "@orchestratorai/jev-core/node";
 
 const CALLER = "orchestratorai";
 const REPLY_TYPE = "orchestrator:reply";
@@ -480,6 +488,55 @@ export default function orchestrator(pi: any) {
         }
         await sleep(GATE_POLL_MS, signal);
       }
+    },
+  });
+
+  // ------------------------------------------------------- Jev rubrics
+
+  let jevClient: JevClient | undefined;
+  let jevRubrics: Map<string, Rubric> | undefined;
+  function jev(): { client: JevClient; rubrics: Map<string, Rubric> } {
+    if (!jevRubrics) jevRubrics = loadRubricDir(process.env.JEV_RUBRIC_DIR ?? defaultRubricDir());
+    if (!jevClient) jevClient = new JevClient(); // throws a clear error if TYPESAFE_API_KEY is unset
+    return { client: jevClient, rubrics: jevRubrics };
+  }
+
+  pi.registerTool({
+    name: "jev_check",
+    label: "Jev rubric check",
+    description:
+      "Run a named OrchestratorAI rubric (a typed, calibrated decision - not an LLM) against text and get " +
+      "a routed decision: pass (safe to use), review (a human should look), or block (do not use this " +
+      "content). Rubrics: witness-coaching (does witness-prep text script or re-frame testimony?), " +
+      "citation-in-record (is a claim supported by the record? inputs claim+record), severity-normalize " +
+      "(HIGH/MEDIUM/LOW for one finding), privilege-coding, signal-classify. Call it only when your task " +
+      "tells you to.",
+    parameters: Type.Object({
+      rubric: Type.String({ description: "Rubric name, e.g. witness-coaching" }),
+      inputs: Type.Union([Type.String(), Type.Record(Type.String(), Type.Any())], {
+        description: "The text for single-input rubrics, or an object of the rubric's named inputs.",
+      }),
+      run_id: Type.String({ description: "The OrchestratorAI run id given in your task; empty if none." }),
+    }),
+    async execute(_id: string, params: { rubric: string; inputs: string | Record<string, unknown>; run_id: string }, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
+      const db = openStore(ctx.cwd);
+      const { client, rubrics } = jev();
+      const rubric = rubrics.get(params.rubric);
+      if (!rubric) throw new Error(`unknown rubric '${params.rubric}'. Available: ${[...rubrics.keys()].join(", ")}`);
+      const result = await runRubric(client, rubric, params.inputs);
+      const run = params.run_id ? (db.getRun(params.run_id) ?? db.findRunByPiId(params.run_id)) : undefined;
+      const preview = typeof params.inputs === "string" ? params.inputs : JSON.stringify(params.inputs);
+      db.recordEvaluation({
+        id: randomUUID(), runId: run?.id, rubric: result.rubric, rubricVersion: result.version,
+        decision: result.decision, reason: result.reason, answers: result.answers,
+        statePreview: preview.slice(0, 400), model: result.model,
+        inputTokens: result.usage?.input_tokens, outputTokens: result.usage?.output_tokens,
+      });
+      if (run) db.appendEvent({ runId: run.id, type: "jev_check", summary: `Jev ${result.rubric} → ${result.decision} (${result.reason})`, detail: JSON.stringify(result.answers, null, 2) });
+      return {
+        content: [{ type: "text", text: JSON.stringify({ decision: result.decision, reason: result.reason, answers: result.answers }, null, 2) }],
+        details: { rubric: result.rubric, version: result.version, decision: result.decision },
+      };
     },
   });
 }

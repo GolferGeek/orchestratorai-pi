@@ -1,0 +1,9 @@
+{
+  "name": "orchestratorai-pi-extension",
+  "private": true,
+  "type": "module",
+  "description": "Runtime deps for the OrchestratorAI Pi extension. jev-core is linked from the sibling repo.",
+  "dependencies": {
+    "@orchestratorai/jev-core": "file:../../../../orchestratorai-jev/packages/core"
+  }
+}

@@ -132,7 +132,7 @@ final class PiRunner: ObservableObject {
             "--model", model
         ]
         process.currentDirectoryURL = projectDirectory
-        process.environment = PiEnvironment.processEnvironment(piExecutable: piPath)
+        process.environment = PiEnvironment.processEnvironment(piExecutable: piPath, projectDirectory: projectDirectory)
         process.standardInput = input
         process.standardOutput = output
         process.standardError = output
