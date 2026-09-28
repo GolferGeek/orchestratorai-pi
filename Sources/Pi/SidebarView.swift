@@ -66,7 +66,10 @@ struct SidebarView: View {
             .background(.bar)
         }
         .navigationTitle("Workflows")
-        .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 300)
+        // Wide enough for the longest catalog title plus its badge without
+        // truncating; draggable between the min and max, because a person who
+        // wants more room for the report can give the detail pane the space back.
+        .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 400)
     }
 
     private var inboxRow: some View {
@@ -92,16 +95,22 @@ struct SidebarView: View {
 
     private func workflowRow(_ workflow: WorkflowDefinition) -> some View {
         HStack(spacing: 6) {
+            // Wrap rather than truncate: dragging the column narrow should cost
+            // a second line, not the end of the workflow's name.
             Label(workflow.title, systemImage: workflow.icon)
-                .lineLimit(1)
-            Spacer(minLength: 0)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
             Text(workflow.status.label)
                 .font(.caption2.weight(.semibold))
+                .lineLimit(1)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(workflow.isReady ? Color.green.opacity(0.18) : Color.secondary.opacity(0.14))
                 .foregroundStyle(workflow.isReady ? Color.green : Color.secondary)
                 .clipShape(Capsule())
+                // The badge keeps its full width; the title takes the second line instead.
+                .layoutPriority(1)
         }
         .tag(SidebarSelection.workflow(workflow.id))
         .accessibilityIdentifier("sidebar.workflow.\(workflow.id)")

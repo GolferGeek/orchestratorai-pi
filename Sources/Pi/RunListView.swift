@@ -168,7 +168,9 @@ struct RunListView: View {
             .padding(.vertical, 8)
         }
         .navigationTitle(title)
-        .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 440)
+        // Run titles are "<Workflow> — <document>", so this column needs real
+        // width; draggable up to 560 for long matter names.
+        .navigationSplitViewColumnWidth(min: 320, ideal: 390, max: 560)
     }
 
     private func runRow(_ run: RunRecord) -> some View {
@@ -183,9 +185,12 @@ struct RunListView: View {
                     .frame(width: 8, height: 8)
                     .padding(.top, 5)
                 VStack(alignment: .leading, spacing: 2) {
+                    // Two lines, wrapping: a run is identified by its document
+                    // name, which is the part a one-line row cuts off first.
                     Text(run.title)
                         .font(.callout.weight(run.id == runner.selectedRunId ? .semibold : .regular))
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("\(state.label) · \(ContentView.displayDate(run.completedAt ?? run.createdAt))")
                         .font(.caption2)
                         .foregroundStyle(state.isLive ? Color.orange : Color.secondary)
