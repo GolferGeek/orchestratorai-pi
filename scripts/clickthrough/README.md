@@ -55,6 +55,8 @@ osascript -e 'tell application "Terminal" to do script "/tmp/pidrv/worker.sh"'
 /tmp/pidrv/d choose context.field.reviewer_side "Disclosing party"
 /tmp/pidrv/t  context.model "qwen3.6:latest"
 /tmp/pidrv/runwf.sh contract-review "Reviewed; proceed." 45
+/tmp/pidrv/d winsize 1280 800          # resize the window, then re-measure
+/tmp/pidrv/d truncated runs.row.<id>   # is this label actually cut off?
 ```
 
 `runwf.sh` reads `data/orchestrator.sqlite` only to decide *when* to look at the
@@ -77,6 +79,10 @@ the card, and it asserts the card is on screen before clicking.
 - **An identifier on a container replaces its descendants'.** A
   `.accessibilityIdentifier` on a row overwrites the identifiers of buttons
   inside it, so a declared identifier can be dead. `d ids` is the check.
+- **AX has no "is truncated" flag.** `truncated` compares the element's drawn
+  frame against the width its string needs at its own font size, counting the
+  lines the frame has room for. It is the only way to check a layout claim
+  without eyeballing a screenshot.
 - **Sidebar sections only expose their collapse control on hover:**
   `d hover AXHeading Litigation` then `d click NSOutlineViewShowHideButtonKey`.
 - **One live run disables Start for every other workflow.** So a run the harness

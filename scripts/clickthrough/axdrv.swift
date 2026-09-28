@@ -405,6 +405,30 @@ case "waitid":
         usleep(2_000_000)
     }
     print("NOTFOUND \(args[1])"); exit(1)
+case "winsize":
+    // winsize <width> <height> — resize the window, so a "usable at 1280x800"
+    // claim is a measurement rather than an assertion.
+    activate()
+    guard let w = windows().first else { die("no window") }
+    var pos = CGPoint(x: 40, y: 40)
+    var size = CGSize(width: Double(args[1]) ?? 1440, height: Double(args[2]) ?? 900)
+    if let v = AXValueCreate(.cgPoint, &pos) { AXUIElementSetAttributeValue(w, kAXPositionAttribute as CFString, v) }
+    if let v = AXValueCreate(.cgSize, &size) { AXUIElementSetAttributeValue(w, kAXSizeAttribute as CFString, v) }
+    usleep(800_000)
+    guard let f = frame(w) else { die("no frame after resize") }
+    print("\(Int(f.width))x\(Int(f.height))")
+case "truncated":
+    // truncated <identifier> — does this text element's rendered width cut its value off?
+    // AX has no "is truncated" flag, so compare the drawn frame against the width the
+    // string needs at the element's own font size.
+    activate()
+    guard let el = byIdent(args[1]), let f = frame(el) else { die("no element/frame #\(args[1])") }
+    let s = label(el)
+    let font = NSFont.systemFont(ofSize: Double(args.count > 2 ? args[2] : "13") ?? 13)
+    let needed = (s as NSString).size(withAttributes: [.font: font]).width
+    // Two lines of room counts as room: the rows wrap rather than truncate.
+    let lines = max(1.0, (f.height / (font.ascender - font.descender + font.leading)).rounded(.down))
+    print("\(needed <= f.width * lines + 1 ? "FITS" : "TRUNCATED")\t\(Int(needed))pt needed\t\(Int(f.width))x\(Int(f.height)) drawn\t\(Int(lines)) line(s)\t\"\(s)\"")
 case "windowtitle":
     activate()
     print(windows().map { title($0) }.joined(separator: " | "))
