@@ -32,7 +32,9 @@ Two macOS facts drive the design:
 | `d` | `r … axdrv` shorthand: `d press launch.start`, `d text`, `d ids`. |
 | `t` | `t <identifier> <text>` — click a field, select all, type over it. |
 | `k` / `keys.scpt` | Raw keys (`esc`, `return`, `clear`) via System Events. |
-| `runwf.sh` | One workflow end to end: select → new run → demo sample → Start, then answer every attorney gate and the final review with real clicks. |
+| `decideloop.sh` | The shared watch-and-decide loop: answers whatever a run is waiting on — a mid-flow gate, the final review — with real clicks. |
+| `runwf.sh` | One workflow end to end: select → new run → demo sample → Start, then `decideloop.sh`. |
+| `reviewrun.sh` | Finishes a run that already exists: resumes it if nothing is driving it, then `decideloop.sh`. |
 
 ## Setup
 
@@ -77,3 +79,10 @@ the card, and it asserts the card is on screen before clicking.
   inside it, so a declared identifier can be dead. `d ids` is the check.
 - **Sidebar sections only expose their collapse control on hover:**
   `d hover AXHeading Litigation` then `d click NSOutlineViewShowHideButtonKey`.
+- **One live run disables Start for every other workflow.** So a run the harness
+  fails to finish does not fail one line of the record — it fails every line
+  after it. That is why the gate and final-review logic is in one shared
+  `decideloop.sh` instead of duplicated: the first pass lost four hours to a
+  `reviewrun.sh` that only knew how to answer a final review, meeting a run that
+  had stopped at a mid-flow gate. When `runwf.sh` reports that Start never
+  became enabled, it now names the run still holding the app.
