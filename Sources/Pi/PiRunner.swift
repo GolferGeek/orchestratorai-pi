@@ -224,6 +224,11 @@ final class PiRunner: ObservableObject {
         process.terminationHandler = { [weak self] process in
             Task { @MainActor in
                 guard let self else { return }
+                // The handler fires asynchronously, so by the time it runs a *newer*
+                // launch may already own `activeRunId` (launchPi stops the previous
+                // process first). Act only for the run this process was started for,
+                // or a relaunch marks the run it just started as orphaned.
+                guard self.activeRunId == runId else { return }
                 self.outputPipe?.fileHandleForReading.readabilityHandler = nil
                 self.isRunning = false
                 if let activeRunId = self.activeRunId, let run = self.store?.run(id: activeRunId), run.isLive {
