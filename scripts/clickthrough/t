@@ -1,0 +1,5 @@
+#!/bin/bash
+# t <identifier> <text>  — click the field, select all, type text (real keystrokes).
+/tmp/pidrv/r /tmp/pidrv/axdrv click "$1" >/dev/null || exit 1
+sleep 1
+/tmp/pidrv/r osascript /tmp/pidrv/keys.scpt type "$2"

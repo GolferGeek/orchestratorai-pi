@@ -1,0 +1,11 @@
+#!/bin/bash
+# r <command...> — run a command inside the Terminal-hosted worker (inherits Accessibility).
+d=/tmp/pidrv
+rm -f "$d/done" "$d/out.txt" "$d/rc.txt"
+printf '%q ' "$@" > "$d/in.sh.tmp"
+printf '\n' >> "$d/in.sh.tmp"
+mv "$d/in.sh.tmp" "$d/in.sh"
+for i in $(seq 1 ${R_TIMEOUT:-900}); do [ -f "$d/done" ] && break; sleep 1; done
+if [ ! -f "$d/done" ]; then echo "R_TIMEOUT"; exit 99; fi
+cat "$d/out.txt"
+exit $(cat "$d/rc.txt" 2>/dev/null || echo 98)

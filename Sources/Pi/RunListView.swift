@@ -174,19 +174,25 @@ struct RunListView: View {
     private func runRow(_ run: RunRecord) -> some View {
         let state = runner.reviewState(for: run)
         return HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(dotColor(for: state))
-                .frame(width: 8, height: 8)
-                .padding(.top, 5)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(run.title)
-                    .font(.callout.weight(run.id == runner.selectedRunId ? .semibold : .regular))
-                    .lineLimit(1)
-                Text("\(state.label) · \(ContentView.displayDate(run.completedAt ?? run.createdAt))")
-                    .font(.caption2)
-                    .foregroundStyle(state.isLive ? Color.orange : Color.secondary)
-                    .lineLimit(1)
+            // The row identifier belongs on the descriptive content, not on the whole row:
+            // an accessibilityIdentifier on a container replaces its descendants', which
+            // swallowed the delete button's and the guard badge's own identifiers.
+            HStack(alignment: .top, spacing: 8) {
+                Circle()
+                    .fill(dotColor(for: state))
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 5)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(run.title)
+                        .font(.callout.weight(run.id == runner.selectedRunId ? .semibold : .regular))
+                        .lineLimit(1)
+                    Text("\(state.label) · \(ContentView.displayDate(run.completedAt ?? run.createdAt))")
+                        .font(.caption2)
+                        .foregroundStyle(state.isLive ? Color.orange : Color.secondary)
+                        .lineLimit(1)
+                }
             }
+            .accessibilityIdentifier("runs.row.\(run.id)")
             Spacer(minLength: 0)
             // Worst Jev guard decision on this run, if any rubric ran.
             if let decision = runner.worstDecision(for: run.id) {
@@ -205,7 +211,6 @@ struct RunListView: View {
         }
         .padding(.vertical, 2)
         .tag(run.id)
-        .accessibilityIdentifier("runs.row.\(run.id)")
     }
 
     private func dotColor(for state: ReviewState) -> Color {

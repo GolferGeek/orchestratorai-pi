@@ -1,0 +1,2 @@
+#!/bin/bash
+exec /tmp/pidrv/r /tmp/pidrv/axdrv "$@"

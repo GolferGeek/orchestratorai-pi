@@ -1,0 +1,3 @@
+#!/bin/bash
+# k <esc|return|tab|clear>
+/tmp/pidrv/r osascript /tmp/pidrv/keys.scpt "$1"
