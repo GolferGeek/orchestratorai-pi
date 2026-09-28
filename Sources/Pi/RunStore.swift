@@ -270,14 +270,23 @@ final class RunStore {
     }
 
     func reviewState(for run: RunRecord, checkpoints: [CheckpointRecord]) -> ReviewState {
+        // A run that ended badly is that, whatever checkpoint it happened to be
+        // holding. `markOrphaned` deliberately leaves a pending gate pending so a
+        // resume can pick it back up — but if the gate won the state, an orphaned
+        // run read as "Awaiting attorney decision" forever: the resume card is only
+        // offered for a stopped or failed run, so the one run that needed resuming
+        // was the one run that could not be. Terminal status comes first.
+        switch run.status {
+        case "failed": return .failed
+        case "stopped": return .stopped
+        default: break
+        }
         if let gate = checkpoints.last(where: { $0.isGate && $0.isPending }) {
             return .awaitingGate(gate)
         }
         switch run.status {
         case "queued": return .queued
         case "running": return .running
-        case "failed": return .failed
-        case "stopped": return .stopped
         default: break
         }
         guard let final = checkpoints.last(where: { $0.kind == "final_review" }) else {
