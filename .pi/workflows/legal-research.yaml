@@ -159,15 +159,23 @@ flow:
         value: "{memo}"
       as: final_memo
 
+    # The report writer used to be asked to reproduce the whole memorandum inside its
+    # own output. That is thousands of tokens of pure copying, and it is where the
+    # local model stopped calling pi_agents_submit_result and wrote its deliverable as
+    # a message instead — the run then failed with "finished without submitting a
+    # result". The agent now writes only the wrapper it actually reasons about, and the
+    # memo is spliced in verbatim by a value node, which cannot forget to submit.
     - kind: agent
       profile: research-report-writer
       label: report
       task: |-
-        Write the final research report.
+        Write the front matter of the final research report. The memorandum itself is
+        appended after your output — do NOT reproduce it.
         The first line must be exactly:
         # Legal research — [short question label]
-        Then: ## Short answer, ## Attorney review focus, ## Memorandum, ## Verified authorities,
+        Then, in this order: ## Short answer, ## Attorney review focus, ## Verified authorities,
         ## Unverified authorities, ## Corpus gaps, ## Attorney gate decision, ## Limitations.
+        Stop after ## Limitations.
 
         Under ## Attorney review focus list unchecked tasks:
         - [ ] SEVERITY — issue; action
@@ -180,5 +188,14 @@ flow:
         {final_memo}
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: front_matter
+
+    - kind: value
+      value: |-
+        {front_matter}
+
+        ## Memorandum
+
+        {final_memo}
       as: report
 display: report
