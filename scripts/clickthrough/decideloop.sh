@@ -18,7 +18,7 @@
 
 decide_loop() {
   local RID="$1" NOTE="$2" MAXMIN="$3"
-  local GATES=0 SAWLIVE=0 ST PG PF GT OK FS DEC MINE a
+  local GATES=0 SAWLIVE=0 ST PG PF GT OK FS DEC MINE LT a
   local DEADLINE=$(( $(date +%s) + MAXMIN*60 ))
 
   while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -88,8 +88,12 @@ decide_loop() {
         return 1;;
     esac
 
-    if [ "$SAWLIVE" -eq 0 ] && [ "$(q "select count(*) from run_progress where run_id='$RID';" 2>/dev/null || echo 0)" -gt 0 ]; then
-      SAWLIVE=1; say "live text rows present in store"
+    # run_progress is keyed by session file, not by run, so join through the
+    # node_session events this run journalled. The old query named a column that
+    # does not exist, so "live text" was never once observed.
+    if [ "$SAWLIVE" -eq 0 ]; then
+      LT=$(q "select count(*) from run_progress where session_file in (select detail from run_events where run_id='$RID' and type='node_session');")
+      if [ "${LT:-0}" -gt 0 ]; then SAWLIVE=1; say "live text present in store ($LT streaming agent(s))"; fi
     fi
     sleep 15
   done
