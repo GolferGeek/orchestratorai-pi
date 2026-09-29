@@ -30,17 +30,17 @@ case "$ST" in
     if [ "$($D exists run.resume)" = "YES" ]; then
       say "resuming orphaned run through the UI"
       $D press run.resume >/dev/null 2>&1
-      # Pi has to start, load the project and rebuild the remainder of the flow before
-      # the run leaves 'stopped'. Wait for that, or the decide loop reads the run's
-      # pre-resume status and calls the resume a failure.
-      for i in $(seq 1 40); do
+      # Pi has to start, load the project, validate pi-agents and rebuild the remainder
+      # of the flow before the run leaves 'stopped'. Measured at over three minutes on
+      # a cold start; 200s was not enough and made a working resume look like a failure.
+      for i in $(seq 1 120); do
         sleep 5
         ST=$(q "select status from runs where id='$RID';")
         case "$ST" in queued|running) break;; esac
       done
       case "$ST" in
         queued|running) say "resume took: status=$ST";;
-        *) say "FAIL resume pressed but the run is still $ST after 200s"; exit 1;;
+        *) say "FAIL resume pressed but the run is still $ST after 600s"; exit 1;;
       esac
     else
       say "FAIL run is $ST and no Resume button is on screen"; exit 1

@@ -508,6 +508,19 @@ struct ContentView: View {
         )
     }
 
+    /// A run of a typed workflow is titled after its first field, which for
+    /// `legal-research` or `kb-query` is a whole question. Eighty characters of it
+    /// needs around 650pt to draw — wider than the runs column at any laptop size,
+    /// so the run list showed a sentence cut mid-word. Keep enough to tell two runs
+    /// apart, and end on a word.
+    static func runTitleFragment(_ text: String, limit: Int = 48) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else { return trimmed }
+        let head = trimmed.prefix(limit)
+        let cut = head.lastIndex(of: " ").map { head[..<$0] } ?? head
+        return cut.trimmingCharacters(in: .whitespaces) + "…"
+    }
+
     private func startRun(workflow: WorkflowDefinition, launch: WorkflowLaunchSpec) {
         var params = paramValues
         params.removeValue(forKey: "run_id")
@@ -515,7 +528,7 @@ struct ContentView: View {
         if launch.inputKind == .none {
             // Title the run after the first required field (e.g. the research question).
             let key = launch.fields.first(where: { launch.requiredFieldParams.contains($0.param) })?.param ?? launch.fields.first?.param ?? ""
-            source = String((paramValues[key] ?? workflow.title).prefix(80))
+            source = Self.runTitleFragment(paramValues[key] ?? workflow.title)
         } else {
             guard let selectedFile else { return }
             params[launch.fileParam] = selectedFile.path

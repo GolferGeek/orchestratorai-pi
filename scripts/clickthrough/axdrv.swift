@@ -424,11 +424,21 @@ case "truncated":
     activate()
     guard let el = byIdent(args[1]), let f = frame(el) else { die("no element/frame #\(args[1])") }
     let s = label(el)
-    let font = NSFont.systemFont(ofSize: Double(args.count > 2 ? args[2] : "13") ?? 13)
+    let font = NSFont.systemFont(ofSize: Double(args.count > 2 ? args[2] : "12") ?? 12)
     let needed = (s as NSString).size(withAttributes: [.font: font]).width
-    // Two lines of room counts as room: the rows wrap rather than truncate.
-    let lines = max(1.0, (f.height / (font.ascender - font.descender + font.leading)).rounded(.down))
-    print("\(needed <= f.width * lines + 1 ? "FITS" : "TRUNCATED")\t\(Int(needed))pt needed\t\(Int(f.width))x\(Int(f.height)) drawn\t\(Int(lines)) line(s)\t\"\(s)\"")
+    let lineHeight = font.ascender - font.descender + font.leading
+    // A row off the bottom of a List is not laid out at all: AX reports 0x0 for it.
+    // Saying TRUNCATED there would be measuring a row that was never drawn.
+    if f.width < 1 || f.height < 1 {
+        print("OFFSCREEN\t\(Int(needed))pt needed\t- drawn\t-\t\"\(s)\"")
+        exit(0)
+    }
+    // Round, do not floor: a two-line row is ~1.9 line-heights tall once the
+    // List's own padding is taken off, and flooring called every wrapped row
+    // single-line — which read as "the wrap never took effect".
+    let lines = max(1.0, (f.height / lineHeight).rounded())
+    let capacity = f.width * lines
+    print("\(needed <= capacity + 1 ? "FITS" : "TRUNCATED")\t\(Int(needed))pt needed\t\(Int(f.width))x\(Int(f.height)) drawn\t\(Int(lines)) line(s) = \(Int(capacity))pt\t\"\(s)\"")
 case "windowtitle":
     activate()
     print(windows().map { title($0) }.joined(separator: " | "))

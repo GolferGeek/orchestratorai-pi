@@ -18,7 +18,7 @@
 
 decide_loop() {
   local RID="$1" NOTE="$2" MAXMIN="$3"
-  local GATES=0 SAWLIVE=0 ST PG PF GT OK FS DEC MINE LT a
+  local GATES=0 UNTOKENED=0 SAWLIVE=0 ST PG PF GT GID OK FS DEC MINE LT a
   local DEADLINE=$(( $(date +%s) + MAXMIN*60 ))
 
   while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -29,7 +29,11 @@ decide_loop() {
     if [ "${PG:-0}" -gt 0 ]; then
       # Confirm the gate card is really on screen before deciding.
       if [ "$($D exists gate.approve)" = "YES" ]; then
-        GT=$(q "select title from checkpoints where run_id='$RID' and kind='gate' and status='pending' limit 1;")
+        # Track *this* gate by id. Asking whether any gate on the run carries the
+        # token passes as soon as the first one does, so a later gate whose note
+        # failed to type was recorded as token-evidenced when it was not.
+        GID=$(q "select id from checkpoints where run_id='$RID' and kind='gate' and status='pending' order by requested_at limit 1;")
+        GT=$(q "select title from checkpoints where id='$GID';")
         say "GATE visible in UI: $GT"
         $T gate.comment "$NOTE" >>"${LOG:-/dev/null}" 2>&1; sleep 1
         OK=0
@@ -37,11 +41,18 @@ decide_loop() {
           $D ensure gate.approve >>"${LOG:-/dev/null}" 2>&1
           $D press gate.approve  >>"${LOG:-/dev/null}" 2>&1
           sleep 5
-          if [ "$(q "select count(*) from checkpoints where run_id='$RID' and kind='gate' and decision_comment like '%$TOKEN%';")" -gt 0 ]; then OK=1; break; fi
+          if [ "$(q "select count(*) from checkpoints where id='$GID' and decision_comment like '%$TOKEN%';")" -gt 0 ]; then OK=1; break; fi
+          # The click may have landed while the note did not. Say which, so the
+          # record can be honest about it instead of counting it as evidenced.
+          if [ "$(q "select status from checkpoints where id='$GID';")" != "pending" ]; then
+            say "WARN gate '$GT' was decided but its note carries no token; retyping is not possible once decided"
+            OK=2; break
+          fi
           say "retry gate approve (attempt $a did not register)"
         done
-        if [ "$OK" -ne 1 ]; then say "FAIL gate click never registered"; return 1; fi
+        if [ "$OK" -eq 0 ]; then say "FAIL gate click never registered"; return 1; fi
         GATES=$((GATES+1))
+        [ "$OK" -eq 2 ] && UNTOKENED=$((UNTOKENED+1))
         say "gate approved via UI (#$GATES)"
         sleep 8
         continue
@@ -64,7 +75,7 @@ decide_loop() {
           say "retry final approve (attempt $a did not register)"
         done
         say "final review recorded by harness: ${FS:-none} ; gates=$GATES ; run status=$ST ; token=$TOKEN"
-        [ "$FS" = "approved" ] && { say "PASS (gates answered: $GATES)"; return 0; }
+        [ "$FS" = "approved" ] && { say "PASS (gates answered: $GATES${UNTOKENED:+, untokened: $UNTOKENED})"; return 0; }
         say "FAIL final review not approved"; return 1
       else
         say "WARN final review pending in store but the card is not on screen yet"
