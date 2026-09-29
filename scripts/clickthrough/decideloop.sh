@@ -16,6 +16,25 @@
 #
 # `say`, `q`, `$D` and `$T` come from the caller.
 
+# Type a note into a checkpoint's comment field and prove it arrived. The field can
+# sit below the fold of the detail pane's ScrollView while Approve is still reachable
+# via `ensure`, and `t` silently does nothing when its click misses — which produced
+# a decision recorded with an empty note, and so with no token. An untokened decision
+# is indistinguishable from a bystander's click, so it costs the line its evidence.
+type_note() { # type_note <identifier> <text>
+  local id="$1" text="$2" v
+  for _ in 1 2 3; do
+    $D ensure "$id" >>"${LOG:-/dev/null}" 2>&1
+    $T "$id" "$text" >>"${LOG:-/dev/null}" 2>&1
+    sleep 1
+    v=$($D val "$id" 2>/dev/null)
+    case "$v" in *"$TOKEN"*) return 0;; esac
+    say "retry typing the note into $id (field value did not take)"
+  done
+  say "WARN could not type the note into $id; the decision will carry no token"
+  return 1
+}
+
 decide_loop() {
   local RID="$1" NOTE="$2" MAXMIN="$3"
   local GATES=0 UNTOKENED=0 SAWLIVE=0 ST PG PF GT GID OK FS DEC MINE LT a
@@ -35,7 +54,7 @@ decide_loop() {
         GID=$(q "select id from checkpoints where run_id='$RID' and kind='gate' and status='pending' order by requested_at limit 1;")
         GT=$(q "select title from checkpoints where id='$GID';")
         say "GATE visible in UI: $GT"
-        $T gate.comment "$NOTE" >>"${LOG:-/dev/null}" 2>&1; sleep 1
+        type_note gate.comment "$NOTE"
         OK=0
         for a in 1 2 3 4 5; do
           $D ensure gate.approve >>"${LOG:-/dev/null}" 2>&1
@@ -64,7 +83,7 @@ decide_loop() {
     if [ "${PF:-0}" -gt 0 ]; then
       if [ "$($D exists review.approve)" = "YES" ]; then
         say "final review card visible in UI"
-        $T review.comment "$NOTE" >>"${LOG:-/dev/null}" 2>&1; sleep 1
+        type_note review.comment "$NOTE"
         FS=pending
         for a in 1 2 3 4 5; do
           $D ensure review.approve >>"${LOG:-/dev/null}" 2>&1

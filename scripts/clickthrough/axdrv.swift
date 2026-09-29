@@ -143,10 +143,16 @@ func scrollWheel(at p: CGPoint, lines: Int32) {
 func ensureVisible(_ el: AXUIElement) {
     AXUIElementPerformAction(el, "AXScrollToVisible" as CFString)
     usleep(200_000)
+    // Bound the scroll to the *window*, not the display. These used to be the screen's
+    // edges, which is the same thing only while Pi is full-screen — the assumption the
+    // first pass ran under. Resize the window to a laptop size and the "right edge"
+    // lands outside it, so the wheel went to whatever was behind Pi and the pane never
+    // moved: `ensure` silently gave up and the click landed on nothing.
     let screen = screenBounds()
-    let topSafe = screen.minY + 60      // menu bar + window chrome
-    let bottomSafe = screen.maxY - 40
-    let edge = CGPoint(x: screen.maxX - 25, y: screen.midY)
+    let win = windows().first.flatMap { frame($0) } ?? screen
+    let topSafe = max(screen.minY, win.minY) + 60      // menu bar + window chrome
+    let bottomSafe = min(screen.maxY, win.maxY) - 40
+    let edge = CGPoint(x: min(screen.maxX, win.maxX) - 25, y: (topSafe + bottomSafe) / 2)
     var lastY = CGFloat.greatestFiniteMagnitude
     var stalled = 0
     for _ in 0..<60 {

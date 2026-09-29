@@ -34,6 +34,9 @@ Two macOS facts drive the design:
 | `k` / `keys.scpt` | Raw keys (`esc`, `return`, `clear`) via System Events. |
 | `decideloop.sh` | The shared watch-and-decide loop: answers whatever a run is waiting on — a mid-flow gate, the final review — with real clicks. |
 | `runwf.sh` | One workflow end to end: select → new run → demo sample → Start, then `decideloop.sh`. |
+| `screens.sh` / `screens2.sh` | The screen sweeps: assert each control is really in the live window's accessibility tree, after navigating to it with real clicks. |
+| `layout.sh` | Resize the window to a laptop size and measure every name in the nav and runs columns. |
+| `mkrows.sh` | Build the verification doc's workflow table from the store, so the record is generated from data rather than written from memory. |
 | `reviewrun.sh` | Finishes a run that already exists: resumes it if nothing is driving it, then `decideloop.sh`. |
 
 ## Setup
@@ -79,6 +82,24 @@ the card, and it asserts the card is on screen before clicking.
 - **An identifier on a container replaces its descendants'.** A
   `.accessibilityIdentifier` on a row overwrites the identifiers of buttons
   inside it, so a declared identifier can be dead. `d ids` is the check.
+- **`ensure` scrolls at the *window's* right edge, not the screen's.** They are the
+  same thing only while Pi is full-screen. Resize it to 1280×800 and a
+  screen-edge scroll goes to whatever is behind Pi, so the pane never moves and
+  the click lands on nothing — silently.
+- **Type with `t`, never `d type`.** `d type` posts synthetic key events that a
+  SwiftUI `TextField` ignores; `t` goes through System Events. `d type` into the
+  run search box reported `OK typed` and left the field empty.
+- **Prove the note landed before pressing Approve.** A decision recorded with an
+  empty note carries no token, and an untokened decision is indistinguishable
+  from a bystander's click — so it costs the line its evidence even though the
+  click worked. `type_note` reads the field back and retries.
+- **Never hardcode a run id in a check.** The run a check was written against
+  gets resumed, approved or deleted by a later pass, and the check then reports
+  a false failure. Look one up by state instead — and exclude workflows that
+  have no sidebar row (`inline` runs, created by resumes, have none).
+- **The detail pane only renders a run that belongs to the active workflow.**
+  Reaching a run through Inbox leaves its cards unbuilt, so asserting them there
+  fails for a reason that has nothing to do with the cards.
 - **AX has no "is truncated" flag.** `truncated` compares the element's drawn
   frame against the width its string needs at its own font size, counting the
   lines the frame has room for. It is the only way to check a layout claim
