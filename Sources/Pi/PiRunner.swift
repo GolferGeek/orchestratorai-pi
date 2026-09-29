@@ -26,6 +26,10 @@ final class PiRunner: ObservableObject {
     private var outputPipe: Pipe?
     private let lineBuffer = LineBuffer()
     private var activeRunId: String?
+    /// Whether the active run has been observed live since this process launched it.
+    /// Until it has, a non-live store state means "the extension has not written yet",
+    /// not "the run is over".
+    private var activeRunWentLive = false
     // Store change notification: SQLite in WAL mode appends to <db>-wal on every
     // commit, so watching that file (and the db, for checkpoints) with a
     // dispatch source wakes us on writes instead of polling. A slow fallback
@@ -96,7 +100,14 @@ final class PiRunner: ObservableObject {
         if let activeRunId, let run = runs.first(where: { $0.id == activeRunId }) {
             let state = reviewState(for: run)
             status = state.label
-            if !state.isLive {
+            // Only tear the process down once the run has actually been live under it.
+            // A resume launches Pi against a run the store still has as `stopped`, and
+            // `launchPi` ends by refreshing — so this used to kill the Pi process it had
+            // just started, before the extension had written a single row. The button
+            // did nothing at all, with no error, while the same RPC worked from a shell.
+            if state.isLive {
+                activeRunWentLive = true
+            } else if activeRunWentLive {
                 finishActiveProcess()
             }
         }
@@ -194,6 +205,7 @@ final class PiRunner: ObservableObject {
         }
 
         activeRunId = runId
+        activeRunWentLive = false
         selectedRunId = runId
         isRunning = true
         status = "Starting Pi…"
