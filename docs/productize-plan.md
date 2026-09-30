@@ -30,8 +30,8 @@ covering:
   good — no report was read for legal quality.
 - It says nothing about packaging. Everything in "What exists today" below is
   still true: the app is unsigned, un-notarized, and useless without the
-  repository beside it. The hardened-runtime question in option 2 is unanswered
-  and is the first thing that should be spiked.
+  repository beside it. The hardened-runtime question in option 2 was the first
+  thing to be spiked, and it has been — see the result line under option 2.
 
 No Apple catalog work was started, per the brief.
 
@@ -84,12 +84,16 @@ Developer ID, notarize, staple, and ship a `.dmg`.
 - **Work:** an Apple Developer account and Developer ID certificate; a hardened
   runtime; a signing and notarization step in the build script; a first-run
   seed-and-migrate path; an app icon; a real version scheme.
-- **Open question — the child processes.** The app spawns `pi`, which spawns
-  delegated `pi` children. Under a hardened runtime that either needs
-  `com.apple.security.cs.allow-unsigned-executable-memory` /
-  `disable-library-validation`, or the app has to stop spawning an
-  externally-installed interpreter. This is the single biggest unknown in the
-  whole plan and it should be spiked before anything is promised.
+- **Answered — the child processes.** A scratch copy of `dist/Pi.app` signed
+  `--options runtime` **with no entitlements at all** ran `kb-query` end to end,
+  spawning `pi` and its delegated `pi` child. The hardened runtime is not
+  inherited across `exec`, so neither
+  `com.apple.security.cs.allow-unsigned-executable-memory` nor
+  `disable-library-validation` is needed, and neither should be added. What does
+  break the design is the **App Sandbox** — a different entitlement, required
+  only for the Mac App Store, which is not on this list. Full record and the
+  parts still untested (Gatekeeper, notarization, TCC) in
+  [verification/2026-09-30-hardened-runtime-spike.md](verification/2026-09-30-hardened-runtime-spike.md).
 - **Still required of the user:** `pi`, Node, Ollama, a model pull. The app can
   detect and explain each, but it cannot supply them.
 
@@ -130,11 +134,15 @@ same SQLite store is written.
 
 ### Recommendation
 
-Spike the hardened-runtime question from (2) first, because it decides whether
-(2), (3) and (4) are possible at all. If it holds, the sequence is 2 → 4 → 3,
-with (5) published in parallel as the headless form. If it does not hold, the
-honest answer is that Pi stays a developer artifact (1) plus a Pi project (5)
-until the app stops depending on an externally installed `pi`.
+The hardened-runtime question from (2) was the gate, because it decided whether
+(2), (3) and (4) were possible at all. **It holds** (2026-09-30 spike above), so
+the sequence is 2 → 4 → 3, with (5) published in parallel as the headless form.
+The remaining work in (2) is the ordinary list — a Developer ID certificate, a
+signing and notarization step in `scripts/build-app.sh`, resource embedding and
+a first-run seed, an icon, a version scheme — and none of it requires changing
+how `pi` is launched. Gatekeeper and notarization themselves are still untested;
+no Developer ID certificate exists on the build Mac yet, and that is now the
+first thing in the way.
 
 ## Where Pi sits in the OrchestratorAI offering
 
