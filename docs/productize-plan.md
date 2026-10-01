@@ -7,6 +7,11 @@ here has been shipped, and nothing here should be read as a commitment.
 Written 2026-09-28, alongside the click-through record in
 [verification/2026-09-28-clickthrough.md](verification/2026-09-28-clickthrough.md).
 
+The work this plan describes is tracked as an effort, with the parts it does not
+cover (wrapping Pi so there is no command line, a writable project home, an
+admin workflow builder, front ends on top):
+`~/projects/orchestratorai/efforts/future/pi-mac-app-and-workflow-builder.md`.
+
 ## The catalog gate
 
 **Lifted, for what it was gating.** The brief made the Apple catalog gate
