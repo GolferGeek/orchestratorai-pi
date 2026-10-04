@@ -11,9 +11,11 @@ This project is intentionally not a second web platform. Pi supplies the interac
 .pi/agents/*.md           agent personas (who), incl. the attorney-gate persona
 .pi/skills/               legal skills loaded by personas
 knowledge/frameworks/     GDPR / HIPAA / SOX text the compliance evaluators cite
+.pi/rubrics/              decision rubrics jev_check runs (labelled cases in .pi/rubric-cases/)
 .pi/extensions/orchestrator/
   index.ts                /orchestrator start|stop|ping, run journal, attorney_review + jev_check tools
   store.ts                SQLite schema + writer (node:sqlite, no native deps)
+  decisions/              vendored /v1/systemone client and rubric loader (Clef on Ollama)
 data/orchestrator.sqlite  on-device run store (git-ignored); the app reads it
 Sources/Pi/               SwiftUI shell: catalog, launch, journal, HITL checkpoints
 ```
@@ -56,6 +58,7 @@ Every run is resumable from the store, without pi-agents support for it:
 - Pi ≥ 0.85 (`npm i -g @earendil-works/pi-coding-agent`) and Node ≥ 22.5 (`node:sqlite`).
 - pi-agents is declared in `.pi/settings.json` (`npm:pi-agents@0.21.0`); Pi installs it on first trusted run.
 - Ollama with the model named in the app's "Local model" field (default `qwen3.6:latest`). See [docs/local-models.md](docs/local-models.md).
+- For the `jev_check` guard: Ollama ≥ 0.35 with `clef` pulled, `DECISION_BASE_URL` in `.env` (see `.env.example`), and `npm install` once in `.pi/extensions/orchestrator/`. See [docs/decisions.md](docs/decisions.md).
 - Project trust. Delegated agents are spawned without `--approve`, so the project must be trusted persistently: run `pi` here once and `/trust`, or click **Trust this project for Pi** in the app (both write `~/.pi/agent/trust.json`).
 
 ## Start Pi (terminal)
@@ -103,10 +106,10 @@ text-first for local models.
 **One step is guarded by a classifier, not a prompt.** Local's deposition-prep includes an answer-coaching
 node. Five attempts at constraining it with prompt rules each produced text telling the witness how to
 re-frame adverse documents — the local model ignores rules about its own output. The step now runs behind
-`jev_check` (the `witness-coaching` rubric from the sibling **orchestratorai-jev** repo): the workflow
-switches on the calibrated decision — `pass` ships it, `review` shows it to counsel at a gate, `block`
-omits it and the report says why. In the first guarded run Jev blocked it at confidence 1.00. Every
-evaluation is recorded in the store's `evaluations` table. See [docs/jev.md](docs/jev.md).
+`jev_check`, which runs the `witness-coaching` rubric (`.pi/rubrics/guards/`) on **Clef**, the decision
+model in the Mac Studio's Ollama. The workflow switches on the calibrated decision: `pass` ships it,
+`review` shows it to counsel at a gate, and `block` omits it and the report says why. Every evaluation is
+recorded in the store's `evaluations` table. See [docs/decisions.md](docs/decisions.md).
 
 Two workflows are honest adaptations rather than literal ports, and say so in their `doc:` block: **persistent-case-team** keeps matter state in a Markdown record each run reads and rewrites
 (Local uses Postgres), and **sentinel** screens a folder of signal files rather than polling the network.
@@ -141,4 +144,4 @@ what to say, the claims with their receipts, and the honest caveats. Written to 
 
 ## Store schema
 
-`runs` (one per launch; engine status, params, final Markdown/JSON) · `run_events` (journal) · `checkpoints` (gate / final_review with attorney decision) · `evaluations` (every Jev rubric decision, with answers and confidence). The Swift reader and the TypeScript writer share the schema; see `.pi/extensions/orchestrator/store.ts`.
+`runs` (one per launch; engine status, params, final Markdown/JSON) · `run_events` (journal) · `checkpoints` (gate / final_review with attorney decision) · `evaluations` (every rubric decision, with answers and confidence). The Swift reader and the TypeScript writer share the schema; see `.pi/extensions/orchestrator/store.ts`.

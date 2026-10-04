@@ -51,10 +51,10 @@ application, and the distance between the two is most of the work below.
 | Signing | None. Ad-hoc, unsigned, un-notarized; Gatekeeper will refuse it on any machine it was not built on |
 | Bundle | `CFBundleShortVersionString` 0.1.0, build 1, no icon, `LSMinimumSystemVersion` 13.0 |
 | Where the content lives | Outside the app. The shell locates `.pi/settings.json` via `PI_PROJECT_PATH`, the working directory, or two levels up from the bundle — i.e. it expects to sit in `dist/` inside a checkout |
-| Runtime dependencies | The `pi` CLI on PATH (npm global), Node ≥ 22.5 for `node:sqlite`, pi-agents `0.21.0` fetched on first trusted run, Ollama serving the chosen model |
+| Runtime dependencies | The `pi` CLI on PATH (npm global), Node ≥ 22.5 for `node:sqlite`, pi-agents `0.21.0` fetched on first trusted run, Ollama ≥ 0.35 serving the chosen model and `clef`, `yaml` installed by `npm install` in `.pi/extensions/orchestrator/` |
 | Trust | The project must be trusted persistently (`~/.pi/agent/trust.json`), because delegated agents are spawned without `--approve` |
 | Data | `data/orchestrator.sqlite` on the device. The app only reads it; the Pi extension writes it |
-| Network | Local by default. The `jev_check` guard is the exception — it calls a hosted TypeSafe endpoint with `TYPESAFE_API_KEY` from the project's `.env` |
+| Network | Local by default. The `jev_check` guard calls the decision model at `DECISION_BASE_URL` from the project's `.env`. That is Clef in the same machine's Ollama (`http://127.0.0.1:11434`), so the text stays on the machine unless the URL is pointed at a hosted endpoint |
 | Hardware | The models that behaved on the witness-preparation probe are large (qwen3-coder-next, 80B). This is a workstation-class requirement, not a laptop one |
 
 So a person who is handed `Pi.app` today gets nothing. A person handed the
@@ -182,7 +182,7 @@ Three honest roles, in the order they are worth doing:
 
 What Pi is **not**, and should not be positioned as: a replacement for the
 appliance; a multi-user system; a hosted service; a compliance control. The
-Jev guard is a calibrated classifier on one step, not a compliance guarantee.
+`jev_check` guard is a calibrated classifier on one step, not a compliance guarantee.
 
 ## Draft public wording
 
@@ -220,7 +220,7 @@ Nothing in the wording above should ship without the line next to it.
 |---|---|
 | "Fourteen composed workflows" | `.pi/workflows/*.yaml`; each is Ready in the app; see the click-through record |
 | "run against documents on your own disk" | The launch card takes a file or folder path; the Pi process reads it directly |
-| "not uploaded" | True of the workflow itself. **Caveat:** the `jev_check` guard calls a hosted endpoint. Either say so, make it optional, or move the rubric local before using this sentence |
+| "not uploaded" | True of the workflows and of the `jev_check` guard, which runs on Clef in the local Ollama. **Caveat:** stop using this sentence if `DECISION_BASE_URL` is pointed at a hosted endpoint |
 | "using a language model served locally" | Ollama, provider `ollama` in `PiRunner` |
 | "Mid-flow gates … feed the decision and note back" | `attorney_review` blocks the step and returns the decision verbatim; contract-review feeds it into summary generation |
 | "journaled to an on-device store" | `data/orchestrator.sqlite`; `run_events`, `checkpoints`, `evaluations` |
@@ -240,5 +240,5 @@ the rest are claims about a product nobody has used. None of them are needed —
 - Any change to orchestratorai.io or orchestratorai-offering.
 - A security review of the app or the extension. One should happen before
   anything is distributed outside the building — in particular the `.env`
-  reader that hands `TYPESAFE_API_KEY` to the Pi process, and the fact that the
+  reader that hands `DECISION_API_KEY` (when set) and the rest of `.env` to the Pi process, and the fact that the
   app spawns an interpreter found on PATH.

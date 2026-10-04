@@ -46,7 +46,8 @@ enum PiEnvironment {
     /// name, and pi's own launcher needs `node`, so both directories must be
     /// on PATH even when the app was opened from Finder.
     /// Simple KEY=VALUE parser for the project's gitignored `.env`, so a Finder-launched
-    /// app still hands secrets (TYPESAFE_API_KEY for the Jev guard) to the Pi process.
+    /// app still hands the decision-model settings (DECISION_BASE_URL, DECISION_API_KEY for a hosted
+    /// endpoint) to the Pi process.
     /// Existing process environment wins over the file.
     static func dotEnv(projectDirectory: URL) -> [String: String] {
         guard let text = try? String(contentsOf: projectDirectory.appendingPathComponent(".env"), encoding: .utf8) else { return [:] }

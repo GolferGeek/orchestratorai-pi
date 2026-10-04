@@ -2,8 +2,11 @@
   "name": "orchestratorai-pi-extension",
   "private": true,
   "type": "module",
-  "description": "Runtime deps for the OrchestratorAI Pi extension. jev-core is linked from the sibling repo.",
+  "description": "Runtime deps for the OrchestratorAI Pi extension. The decision-model client is vendored in ./decisions.",
+  "scripts": {
+    "cases": "node decisions/run-cases.ts"
+  },
   "dependencies": {
-    "@orchestratorai/jev-core": "file:../../../../orchestratorai-jev/packages/core"
+    "yaml": "^2.9.1"
   }
 }

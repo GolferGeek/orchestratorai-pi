@@ -98,7 +98,8 @@ Three facts worth stating separately, because the plan's worry conflated them:
   app sets no `DYLD_*` variable, which is the family the hardened runtime does
   strip.
 - **The `.env` read.** `TYPESAFE_API_KEY` still reaches the child; a hardened
-  app reads files normally.
+  app reads files normally. (Since 2026-10-04 the guard reads `DECISION_*`
+  instead; the same `.env` passthrough carries them. See `docs/decisions.md`.)
 - **The SQLite store.** The extension wrote `data/orchestrator.sqlite` and the
   app's WAL watchers saw it; the run appeared, streamed, and completed live.
 - **`pkill`.** `terminateDirectChildren` shells out to `/usr/bin/pkill`; the

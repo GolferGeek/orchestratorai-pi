@@ -50,7 +50,7 @@ final class PiRunner: ObservableObject {
         store?.reviewState(for: run, checkpoints: checkpoints(for: run.id)) ?? .queued
     }
 
-    /// The most severe Jev decision recorded for a run: block > review > pass; nil when no rubric ran.
+    /// The most severe rubric decision recorded for a run: block > review > pass; nil when no rubric ran.
     func worstDecision(for runId: String) -> String? {
         guard let counts = evaluationCounts[runId] else { return nil }
         if counts.block > 0 { return "block" }

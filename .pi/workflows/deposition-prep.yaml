@@ -10,10 +10,10 @@ params:
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
 doc: |-
   Composition: case analyst -> switch(mode) { outline: questions -> research |
-  cross-exam: opposing counsel -> predicted cross -> answer prep -> **Jev guard** -> switch(decision) } -> report.
+  cross-exam: opposing counsel -> predicted cross -> answer prep -> **rubric guard** -> switch(decision) } -> report.
   Ported from orchestratorai-local `legal/workflows/deposition-prep`. The answer-preparation step was
   removed once: three rounds of prompt rules could not stop a local model from scripting testimony.
-  It is back behind a typed guard - `jev_check` runs the `witness-coaching` rubric (orchestratorai-jev)
+  It is back behind a typed guard - `jev_check` runs the `witness-coaching` rubric (`.pi/rubrics/guards/`, on Clef)
   over the prep text and the workflow switches on the decision: pass -> included; review -> shown to the
   attorney at a gate before inclusion; block -> omitted and the report says why. The generative step is
   still an LLM; what changed is that a calibrated classifier, not a prompt, decides whether it ships.

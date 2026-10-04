@@ -1,6 +1,6 @@
 ---
 name: jev-gate
-description: "Screens a block of generated text with a named Jev rubric and returns the routed decision. Deterministic checkpoint, not a reviewer."
+description: "Screens a block of generated text with a named decision rubric and returns the routed decision. Deterministic checkpoint, not a reviewer."
 thinking: off
 skills: []
 tools: [jev_check]

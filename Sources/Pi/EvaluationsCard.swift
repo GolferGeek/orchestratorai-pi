@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Card listing the Jev rubric checks ("guards") recorded against the displayed run.
+/// Card listing the rubric checks ("guards") recorded against the displayed run.
 /// Visual conventions mirror `attorneyReviewCard` in PiApp.swift.
 struct EvaluationsCard: View {
     let evaluations: [EvaluationRecord]
@@ -116,7 +116,7 @@ private struct EvaluationRow: View {
     }
 }
 
-/// Capsule for a Jev decision (`block` / `review` / `pass`); reusable in run lists.
+/// Capsule for a rubric decision (`block` / `review` / `pass`); reusable in run lists.
 struct DecisionBadge: View {
     let decision: String
 

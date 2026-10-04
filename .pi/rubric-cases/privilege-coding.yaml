@@ -1,0 +1,67 @@
+rubric: privilege-coding
+cases:
+  - name: general counsel advising on termination risk
+    expect: [block]
+    state:
+      privilege_holders: "Dana Whitfield (General Counsel), Legal Department, Baker & Lowe LLP (outside counsel)"
+      document: >-
+        From: Dana Whitfield (General Counsel)
+        To: Priya Shah (CEO)
+        Subject: Privileged & Confidential - legal advice re Marco Diaz termination
+        Priya, you asked whether we can terminate Marco this week. My advice: not yet. His complaint to HR
+        on May 2 makes a termination now look retaliatory under the state whistleblower statute. Document the
+        performance issues first and let me review the file before any decision.
+  - name: routine shipping confirmation
+    expect: [pass]
+    state:
+      privilege_holders: "Dana Whitfield (General Counsel), Legal Department, Baker & Lowe LLP (outside counsel)"
+      document: >-
+        From: orders@northwind-supply.com
+        To: receiving@cedar-analytics.com
+        Subject: Shipment confirmation PO-44817
+        Your order of 40 rack-mount servers shipped today via FedEx Freight, tracking 7781 2290 1145.
+        Expected delivery Thursday. Please sign for the pallets at the loading dock.
+  - name: pricing email that copies counsel
+    expect: [review, block]
+    state:
+      privilege_holders: "Dana Whitfield (General Counsel), Legal Department, Baker & Lowe LLP (outside counsel)"
+      document: >-
+        From: Tom Reyes (VP Sales)
+        To: Priya Shah (CEO)
+        Cc: Dana Whitfield (General Counsel)
+        Subject: Northwind renewal pricing
+        Northwind wants 12% off the renewal. I think we can go to 8% if they sign for three years.
+        Dana - looping you in in case the multi-year term needs anything from legal.
+  - name: internal scheduling email
+    expect: [pass]
+    state:
+      privilege_holders: "Dana Whitfield (General Counsel), Legal Department, Baker & Lowe LLP (outside counsel)"
+      document: >-
+        From: Tom Reyes (VP Sales)
+        To: Sales team
+        Subject: Q3 kickoff
+        The Q3 sales kickoff moves to Tuesday at 10am in the Harbor conference room. Bring your pipeline numbers.
+  - name: invoice
+    expect: [pass]
+    state:
+      privilege_holders: "Dana Whitfield (General Counsel), Legal Department, Baker & Lowe LLP (outside counsel)"
+      document: >-
+        INVOICE 2291. Northwind Supply to Cedar Analytics. 40 x rack-mount server @ $5,250 = $210,000. Net 30.
+  - name: outside counsel work product memo
+    expect: [block]
+    state:
+      privilege_holders: "Dana Whitfield (General Counsel), Legal Department, Baker & Lowe LLP (outside counsel)"
+      document: >-
+        ATTORNEY WORK PRODUCT - PREPARED IN ANTICIPATION OF LITIGATION. Baker & Lowe LLP memo to Dana Whitfield.
+        Our assessment of the Diaz retaliation claim: the timing of the termination is the main exposure. We
+        recommend preserving all HR emails from April and May and settling below $150,000 if mediation fails.
+  - name: business asks whether to get legal advice
+    expect: [review]
+    state:
+      privilege_holders: "Dana Whitfield (General Counsel), Legal Department, Baker & Lowe LLP (outside counsel)"
+      document: >-
+        From: Tom Reyes (VP Sales)
+        To: Priya Shah (CEO)
+        Subject: Northwind non-compete
+        Before we hire their account lead, should we get an opinion on whether the non-compete in her
+        Northwind contract is enforceable? I don't want us sued.

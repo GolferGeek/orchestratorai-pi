@@ -1,0 +1,45 @@
+name: privilege-coding
+version: 2
+description: >-
+  Code one document for attorney-client privilege and work product in a discovery review.
+  Mirrors orchestratorai-local's rule: mark not-privileged only at 0.95 certainty that no lawyer
+  or legal advice is involved; anything less is potentially privileged and goes to mandatory
+  individual attorney review.
+domain: legal
+input:
+  document: { type: string, description: "The full text of the document being coded." }
+  privilege_holders: { type: string, description: "Named privilege holders under the review protocol (counsel, legal department)." }
+  matter: { type: string, description: "Matter name and one-line posture.", required: false }
+questions:
+  status:
+    type: choice
+    instructions: What is the privilege status of this document under the review protocol?
+    criteria:
+      privileged: >-
+        A communication with counsel for the purpose of legal advice, or attorney work product,
+        involving a named privilege holder.
+      potentially_privileged: >-
+        Involves a privilege holder, mentions seeking or giving legal advice, or was copied to counsel,
+        but mixes in business content or the purpose is unclear.
+      not_privileged: >-
+        Ordinary business communication or record (an order, invoice, shipment, schedule, or sales note)
+        with no lawyer or legal department on it and no legal-advice content.
+  involves_counsel:
+    type: noul
+    instructions: >-
+      Does the document itself involve a lawyer or a request for legal advice in any way? Judge the
+      document text only; the privilege-holder list is the protocol, not part of the document.
+    criteria:
+      true: A named privilege holder, counsel, "legal", or a request for legal guidance appears in the document.
+      false: No lawyer, legal department, or legal-advice content appears in the document.
+  hot:
+    type: noul
+    instructions: Would this document materially help or hurt either side on the merits?
+routing:
+  - { question: status, choice: privileged, decision: block, reason: withhold and log }
+  - { question: status, choice: potentially_privileged, decision: review, reason: mandatory individual review }
+  # The 0.95 certainty bar sits on the noul: pass only when 95% sure no lawyer or legal advice is involved.
+  # (Clef spreads a three-way choice too thinly to put 0.95 on not_privileged even for a plain invoice.)
+  - { question: involves_counsel, gte: 0.05, decision: review, reason: counsel touched it; 0.95 rule }
+  - { question: status, option: not_privileged, lt: 0.8, decision: review, reason: status uncertain }
+  - { decision: pass, reason: producible }

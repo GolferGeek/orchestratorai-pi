@@ -59,7 +59,7 @@ navigating to it with real clicks.
 | Resume card — on a stopped run | pass | `d exists resume.card` / `run.resume`; **failed before the fix in `01a633d`** |
 | Resume card — Resume actually resumes | pass | `d press run.resume` on deal-memo: `stopped` → `running` in 6s, then the run finished. **Failed before `0d41a48`** |
 | Resume card — per-step edit / revert | pass (presence only) | `d ids` shows `resume.step.<n>.edit`; no override was written |
-| Evaluations card — Jev decisions | pass | `d exists evaluations.card`; `evaluations.badge.*` on runs where a rubric ran. Note: the cards render only when the run is reached through its own workflow row — the detail pane does not build them for a run selected from Inbox |
+| Evaluations card — rubric decisions | pass | `d exists evaluations.card`; `evaluations.badge.*` on runs where a rubric ran. Note: the cards render only when the run is reached through its own workflow row — the detail pane does not build them for a run selected from Inbox |
 | Activity / journal disclosure | pass | `d text` shows "N journal entries · on-device store" on a selected run |
 | Live text during a run | pass | Below the UI: `run_progress` rows joined through the run's `node_session` events, observed on 8 of the 14 runs |
 | Trust card | pass (absent) | `d exists trust.approve` → `NO`, which is correct: this project is already trusted |
@@ -154,7 +154,7 @@ Each has its own commit on `portfolio/legal-catalog-phase2`.
 
 | Fix | Commit | Found how |
 |---|---|---|
-| A row's `.accessibilityIdentifier` replaced its descendants', so the per-run delete button and the Jev badge had no identifier of their own | `4687320` | `d ids` showed the declared identifiers missing |
+| A row's `.accessibilityIdentifier` replaced its descendants', so the per-run delete button and the decision badge had no identifier of their own | `4687320` | `d ids` showed the declared identifiers missing |
 | `reviewState` let a pending gate outrank a terminal run status, so a run orphaned at a gate reported "Awaiting attorney decision" forever and could never be resumed — the resume card is only offered for a stopped or failed run | `01a633d` | `d exists run.resume` returned `NO` on the run the first pass stranded |
 | `terminationHandler` read `activeRunId` when it fired rather than the run it was launched for, so a back-to-back relaunch could mark the run it had just started as orphaned | `8855352` | Reading the launch path while diagnosing the stranded run |
 | The harness's `reviewrun.sh` could only answer a final review, so a run stopped at a mid-flow gate stranded the whole pass — one live run disables Start for every other workflow | `fa4553f` | This is what the first pass died of |

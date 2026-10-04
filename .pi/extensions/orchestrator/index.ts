@@ -1,7 +1,7 @@
 /**
  * OrchestratorAI bridge for Pi.
  *
- * Three responsibilities, all deterministic (no model in the loop):
+ * Four responsibilities, all deterministic (no chat model in the loop):
  *
  * 1. `/orchestrator start|stop|ping <json>` — a slash command the macOS app
  *    invokes over Pi RPC. `start` launches a saved pi-agents workflow by name
@@ -13,15 +13,16 @@
  *    smuggled through the RPC UI channel.
  *
  * 3. `attorney_review` tool — a human-in-the-loop gate that a workflow agent
- *    can call mid-flow.
+ *    can call mid-flow. It records a pending checkpoint and blocks until the
+ *    attorney approves or requests changes in the app. Delegated agents run
+ *    in this same project, so they load this extension and see the tool.
  *
- * 4. `jev_check` tool — runs a named rubric from the orchestratorai-jev
- *    library against text and returns a routed decision (pass | review |
- *    block) with calibrated answers. Pi has no MCP by design, so the extension
- *    links jev-core directly; the rubrics are the same files the MCP serves.
- *    Every evaluation is recorded in the store. It records a pending checkpoint and blocks until the
- *    attorney approves or requests changes in the app. Delegated agents run in
- *    this same project, so they load this extension and see the tool.
+ * 4. `jev_check` tool — runs a named rubric from `.pi/rubrics/` against text
+ *    and returns a routed decision (pass | review | block) with calibrated
+ *    answers. The rubric's questions go to a decision model (Clef on the Mac
+ *    Studio's Ollama by default) through the vendored `./decisions` client.
+ *    Every evaluation is recorded in the store. The tool keeps its historical
+ *    name because workflows and stored runs reference it.
  */
 
 import * as fs from "node:fs";
@@ -29,8 +30,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import { RunStore, type RunRow } from "./store";
-import { JevClient, runRubric, type Rubric } from "@orchestratorai/jev-core";
-import { loadRubricDir, defaultRubricDir } from "@orchestratorai/jev-core/node";
+import { DecisionClient, runRubric, type Rubric } from "./decisions/index.ts";
 
 const CALLER = "orchestratorai";
 const REPLY_TYPE = "orchestrator:reply";
@@ -642,21 +642,25 @@ export default function orchestrator(pi: any) {
     },
   });
 
-  // ------------------------------------------------------- Jev rubrics
+  // ------------------------------------------------- decision rubrics
 
-  let jevClient: JevClient | undefined;
-  let jevRubrics: Map<string, Rubric> | undefined;
-  function jev(): { client: JevClient; rubrics: Map<string, Rubric> } {
-    if (!jevRubrics) jevRubrics = loadRubricDir(process.env.JEV_RUBRIC_DIR ?? defaultRubricDir());
-    if (!jevClient) jevClient = new JevClient(); // throws a clear error if TYPESAFE_API_KEY is unset
-    return { client: jevClient, rubrics: jevRubrics };
+  let decisionClient: DecisionClient | undefined;
+  let rubricCache: Map<string, Rubric> | undefined;
+  async function decisions(cwd: string): Promise<{ client: DecisionClient; rubrics: Map<string, Rubric> }> {
+    if (!rubricCache) {
+      // Loaded on first use: it needs `yaml` (npm install here), and its absence must not stop the extension loading.
+      const { loadRubricDir } = await import("./decisions/node.ts");
+      rubricCache = loadRubricDir(process.env.DECISION_RUBRIC_DIR || path.join(findProjectDir(cwd), ".pi", "rubrics"));
+    }
+    if (!decisionClient) decisionClient = new DecisionClient(); // throws a clear error if DECISION_BASE_URL is unset
+    return { client: decisionClient, rubrics: rubricCache };
   }
 
   pi.registerTool({
     name: "jev_check",
-    label: "Jev rubric check",
+    label: "Rubric check",
     description:
-      "Run a named OrchestratorAI rubric (a typed, calibrated decision - not an LLM) against text and get " +
+      "Run a named OrchestratorAI rubric (typed questions answered by a calibrated decision model, not a chat LLM) against text and get " +
       "a routed decision: pass (safe to use), review (a human should look), or block (do not use this " +
       "content). Rubrics: witness-coaching (does witness-prep text script or re-frame testimony?), " +
       "citation-in-record (is a claim supported by the record? inputs claim+record), severity-normalize " +
@@ -671,7 +675,7 @@ export default function orchestrator(pi: any) {
     }),
     async execute(_id: string, params: { rubric: string; inputs: string | Record<string, unknown>; run_id: string }, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
       const db = openStore(ctx.cwd);
-      const { client, rubrics } = jev();
+      const { client, rubrics } = await decisions(ctx.cwd);
       const rubric = rubrics.get(params.rubric);
       if (!rubric) throw new Error(`unknown rubric '${params.rubric}'. Available: ${[...rubrics.keys()].join(", ")}`);
       const result = await runRubric(client, rubric, params.inputs);
@@ -683,7 +687,7 @@ export default function orchestrator(pi: any) {
         statePreview: preview.slice(0, 400), model: result.model,
         inputTokens: result.usage?.input_tokens, outputTokens: result.usage?.output_tokens,
       });
-      if (run) db.appendEvent({ runId: run.id, type: "jev_check", summary: `Jev ${result.rubric} → ${result.decision} (${result.reason})`, detail: JSON.stringify(result.answers, null, 2) });
+      if (run) db.appendEvent({ runId: run.id, type: "jev_check", summary: `Rubric ${result.rubric} → ${result.decision} (${result.reason})`, detail: JSON.stringify(result.answers, null, 2) });
       return {
         content: [{ type: "text", text: JSON.stringify({ decision: result.decision, reason: result.reason, answers: result.answers }, null, 2) }],
         details: { rubric: result.rubric, version: result.version, decision: result.decision },

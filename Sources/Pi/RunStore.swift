@@ -56,7 +56,7 @@ struct CheckpointRecord: Identifiable, Hashable {
     var isGate: Bool { kind == "gate" }
 }
 
-/// One calibrated answer from a Jev rubric question, reduced to its headline numbers.
+/// One calibrated answer from a rubric question, reduced to its headline numbers.
 struct EvaluationAnswer: Hashable {
     enum Kind: String, Hashable {
         case noul, score, choice
@@ -89,7 +89,7 @@ struct EvaluationAnswer: Hashable {
     }
 }
 
-/// A Jev rubric check recorded against a run (`evaluations` table).
+/// A rubric check recorded against a run (`evaluations` table).
 struct EvaluationRecord: Identifiable, Hashable {
     let id: String
     let runId: String?

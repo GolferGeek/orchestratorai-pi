@@ -1,0 +1,23 @@
+name: severity-normalize
+version: 1
+description: >-
+  Assign a consistent HIGH / MEDIUM / LOW severity to one finding, so checklists from
+  different workflows and model runs mean the same thing.
+domain: legal
+input:
+  finding: { type: string, description: "One checklist finding: the issue and its recommended action." }
+questions:
+  severity:
+    type: score
+    instructions: How severe is this finding for the client if left unaddressed?
+    criteria:
+      - Housekeeping or best practice; no realistic loss if ignored.
+      - Real but bounded exposure; a workaround or later fix exists.
+      - Material exposure to liability, enforceability, regulatory penalty, or the transaction itself.
+  needs_attorney:
+    type: noul
+    instructions: Does resolving this require a lawyer's judgment rather than a clerical fix?
+routing:
+  - { question: severity, gte: 1.5, decision: block, reason: HIGH }
+  - { question: severity, gte: 0.5, decision: review, reason: MEDIUM }
+  - { decision: pass, reason: LOW }

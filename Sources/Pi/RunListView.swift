@@ -199,7 +199,7 @@ struct RunListView: View {
             }
             .accessibilityIdentifier("runs.row.\(run.id)")
             Spacer(minLength: 0)
-            // Worst Jev guard decision on this run, if any rubric ran.
+            // Worst rubric guard decision on this run, if any rubric ran.
             if let decision = runner.worstDecision(for: run.id) {
                 DecisionBadge(decision: decision)
             }

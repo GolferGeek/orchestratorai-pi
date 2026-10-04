@@ -52,7 +52,7 @@ $D click runs.row.$RID >/dev/null; sleep 4
 chk "save markdown" report.save
 chk "evaluations card" evaluations.card
 chk "reopen review" review.reopen
-say "jev badges on this run: $($D ids | grep -c 'evaluations\.badge\.')"
+say "decision badges on this run: $($D ids | grep -c 'evaluations\.badge\.')"
 
 say "--- delete confirmation ---"
 DEL=$($D ids | grep -oE '^runs\.row\.[^	]+\.delete' | head -1)

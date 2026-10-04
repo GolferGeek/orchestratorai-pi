@@ -1,0 +1,27 @@
+name: signal-classify
+version: 1
+description: Classify one incoming legal signal by type for Portfolio Sentinel, and decide if it is portfolio-relevant.
+domain: legal
+input:
+  signal: { type: string, description: "The incoming item: a ruling, enforcement action, bill, guidance, or news text." }
+  portfolio: { type: string, description: "The tracked portfolio: clients, matters, jurisdictions, practice areas, entities of interest." }
+questions:
+  type:
+    type: choice
+    instructions: What kind of legal development is this?
+    criteria:
+      ruling: A court decision.
+      enforcement: A regulator's action against a party.
+      legislation: A bill, statute, or amendment.
+      guidance: Regulatory guidance, rule-making, or advisory.
+      news: Reporting or commentary about any of the above.
+  touches_portfolio:
+    type: noul
+    instructions: Does this signal bear on a client, matter, jurisdiction, practice area, or entity listed in the portfolio?
+    criteria:
+      true: It changes the law, risk, or posture for something the portfolio names.
+      false: It is outside every jurisdiction and practice area the portfolio names, or concerns no listed entity.
+routing:
+  - { question: touches_portfolio, gte: 0.7, decision: block, reason: raise an alert }
+  - { question: touches_portfolio, gte: 0.35, decision: review, reason: possible relevance }
+  - { decision: pass, reason: dismiss }

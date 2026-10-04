@@ -20,14 +20,12 @@ one config value away from coming home when an open System One model exists.
 2. **The wall.** Deposition prep generated witness coaching. Five rounds of prompt rules failed; the
    newest Qwen obeyed the rules into paralysis. A generative model cannot be trusted to obey a rule about
    its own output.
-3. **A different kind of model.** Jev answers *is this true / which / how much* with calibrated
-   probabilities. First guarded run: coaching blocked at confidence 1.00, no human needed.
-4. **The asset that outlasts the vendor.** Rubrics, thresholds, labeled cases — versioned, tested, 10/10.
-   Portable to any model with the same shape.
-5. **Shared, not siloed.** The guards are an MCP on the tailnet today; Enterprise/Local/Apple use the
-   same five tools.
-6. **Bringing it home.** Jev's economics say "small model." When an open one exists it goes on the Spark
-   box, `TYPESAFE_BASE_URL` points at it, nothing else changes.
+3. **A different kind of model.** Clef, the decision model Ollama serves, answers *is this true / which /
+   how much* with calibrated probabilities. The coaching text is blocked with no human needed.
+4. **The asset that outlasts the vendor.** Rubrics, thresholds, labelled cases: versioned, tested, 29/29
+   on `clef`. They work with any model behind a `/v1/systemone` endpoint.
+5. **All on one machine.** The guard runs on the same Mac Studio's Ollama as the workflows. Moving to
+   hosted Jev later means changing `DECISION_BASE_URL`, `DECISION_API_KEY`, and `DECISION_MODEL`.
 
 ---
 
@@ -79,23 +77,24 @@ finished run and narrate the journal.
 
 ### 6. The wall, then the guard (the climax — pre-baked)
 - **Show:** Deposition Prep run (Predicted cross-exam). Expand the Activity journal: `answer-prep`
-  completed, then `Jev witness-coaching → block (supplies a characterisation or script to adopt)`, then
+  completed, then `Rubric witness-coaching → block (supplies a characterisation or script to adopt)`, then
   the report's Limitations: *"Answer preparation was generated and withheld…"*. Expand the blocked text
   in the Guards card: `"Prepared Answer: Yes, that is correct." "Lock this in early." "Be absolute here."`
 - **Say:** "Five hard rules in the persona. The model wrote a script anyway. A calibrated classifier read
-  it and said 'no' with 100% confidence, and the workflow dropped it — no human needed. That's the whole
-  argument for the second kind of model."
-- **Receipt:** `evaluations` table; `orchestratorai-jev/rubrics/guards/witness-coaching.yaml` (v5, with
-  the v1→v5 reasoning in the comments); `tests/cases/witness-coaching.yaml` 10/10.
+  it and said 'no', and the workflow dropped it — no human needed. That's the whole argument for the
+  second kind of model."
+- **Receipt:** `evaluations` table; `.pi/rubrics/guards/witness-coaching.yaml` (v7);
+  `.pi/rubric-cases/witness-coaching.yaml`, 7/7 on `clef`.
 
-### 7. Jev grades the models (pre-baked)
+### 7. The guard grades the models (pre-baked)
 - **Show:** three probe runs, same task, same guard: qwen3.6 → block; qwen3.8 → froze for 37 min and
   never delivered (but noticed the questions misquoted the record); qwen3-coder-next 80B → passed in
   4 min.
 - **Say:** "Same rubric, three models, five minutes each. That's how you pick a model per node now — with
   a grade, not a vibe. And `model:` is per node, so the judgment steps can use the big one and the
   fan-out workers the cheap one."
-- **Receipt:** `.pi/workflows/prep-probe-*.yaml`; README "Which local model, per node".
+- **Receipt:** `.pi/workflows/prep-probe-*.yaml`; README "Which local model, per node". These runs were
+  graded by the earlier hosted guard; re-run them on `clef` before filming.
 
 ### 8. Crash-resume (pre-baked; the terminal demo is the proof)
 - **Show:** a stopped Contract Review run. The **Resume from checkpoint** card lists "Step 1 ·
@@ -112,14 +111,6 @@ finished run and narrate the journal.
 - **Say:** "The app never polls. It watches the database file. The agent streams its own output into the
   store, and the app joins it to the run."
 
-### 10. The guards are a service (terminal, 30 s)
-- **Show:** `claude mcp list` → `jev ✔ Connected`. `curl` the tailnet address with the token → MCP
-  handshake; without → 401. `jev_route_request("Is this witness prep note OK? …")` → picks the rubric,
-  runs it, returns `block`.
-- **Say:** "One MCP, grouped methods, one typed tool per rubric, and a router that picks the rubric for
-  you. It's on our tailnet now. Enterprise gets it the same way."
-- **Receipt:** `orchestratorai-jev` (GitHub, private); `deploy/com.orchestratorai.jev-mcp.plist`.
-
 ---
 
 ## Claims, with what backs them
@@ -131,14 +122,13 @@ finished run and narrate the journal.
 | HITL anywhere: mid-sequence, inside loops, sequential (4 in Discovery), branching, conditional | contract-review, cross-exam, discovery-review, legal-research, deposition-prep |
 | Deterministic launch, no model chooses the workflow | `/orchestrator start` → pi-agents `start` op |
 | The store is the contract | app reads SQLite; extension writes; any front end could consume it |
-| Prompt rules can't stop coaching; a classifier can | 5 failed prompt rounds; guard blocked at 1.00 |
-| Rubric tuned on labeled cases, versioned | v1→v5, 10/10 live, reasoning in comments |
+| Prompt rules can't stop coaching; a classifier can | 5 failed prompt rounds; the guard blocks it |
+| Rubrics tuned on labelled cases, versioned | 5 rubrics, 29/29 cases live on `clef` |
 | Per-node model choice with a grade | prep probes: 3.6 block / 3.8 froze / coder-next pass |
 | Crash-resume | killed at gate → resume ran 2 agents, finished |
 | Edit state before resume | `step_overrides` + Resume card editor |
 | Typed state with reducers | `run_state`, `state_update`/`state_get`, store-enforced |
 | Live streaming, no polling | dispatch source on WAL; `run_progress` |
-| Guards shared suite-wide | MCP on the tailnet, token-protected, LaunchAgent |
 
 ## The LangGraph comparison (say it exactly this way)
 
@@ -150,10 +140,9 @@ reducer; token-level streaming is per-agent, not per-token in the UI. Neither ch
 
 ## Say the quiet parts (they're what make it credible)
 
-- **Not "local only."** The 14 workflows reason locally; the *guard* sends the text being judged to
-  Jev's API. For deposition prep that's generated text about a real witness. Say: *local-first for
-  reasoning, cloud-assisted for judgment, by choice, for now* — and that the client already takes a
-  local base URL when an open System One model exists.
+- **Local, guard included.** The 14 workflows and the guard both run on the Studio's Ollama, so the
+  text being judged (for deposition prep, generated text about a real witness) stays on the machine. If
+  the guard moves to hosted Jev later, that stops being true; say so then.
 - **The model probes are probes.** Six runs on three Qwens. What's solid is the harness, not a ranking.
 - **We cut a feature rather than ship witness coaching**, and the guard is what let us put it back.
   This is the most trustworthy sentence in the video.
@@ -162,16 +151,16 @@ reducer; token-level streaming is per-agent, not per-token in the UI. Neither ch
 - **An agent with `read` can read the store.** The DB lives in the project; a roaming model read it once.
   Fine for a prototype; move the store out before anything real.
 - **Hallucinated specifics still slip through** (a deal memo invented a review date). Checklists are
-  reliable; incidental prose facts need checking — which is exactly what the `compare_citation_in_record`
-  guard is for next.
+  reliable; incidental prose facts need checking — which is exactly what the `citation-in-record`
+  rubric is for next (it blocks that invented date in its labelled cases).
 
 ## Numbers worth saying out loud
 
 - 14 workflows, 63 personas, 8 fixture sets — all synthetic and labelled.
 - ~25 real runs in the store; 1,000+ journaled node events; every agent's intermediate output kept.
-- witness-coaching rubric: 5 versions, 7 labeled cases, 10/10 live; the 80B model's real output is one of
+- witness-coaching rubric: v7, 7 labelled cases, 7/7 on `clef`; the 80B model's real output is one of
   the cases.
-- Jev: 380 input tokens to block the coaching text; ~$42 per *billion* input tokens.
+- Clef: about 440 input tokens to block the coaching text, answered on the Studio with no per-call cost.
 - Crash-resume: 3 agents before the kill, 2 after, 0 re-run.
 
 ## Cheat sheet
@@ -183,9 +172,7 @@ reducer; token-level streaming is per-agent, not per-token in the UI. Neither ch
 pi --approve                                         # TUI; /contract-review fixtures/example-nda.md
 sqlite3 data/orchestrator.sqlite 'select title,status,agents from runs order by created_at desc limit 10;'
 # guards
-cd ../orchestratorai-jev && npm test                 # 10/10 live
-claude mcp list                                      # jev ✔ Connected
-curl -s -X POST http://gg-macstudio.tail126196.ts.net:8787/mcp -H "Authorization: Bearer $JEV_MCP_TOKEN" ...
+cd .pi/extensions/orchestrator && DECISION_BASE_URL=http://gg-macstudio:11434 npm run cases   # 29/29 on clef
 ```
 
 Fixtures to reach for on camera: `fixtures/onboarding/conflicting-version-nda.md` (fast, visibly
@@ -194,5 +181,5 @@ messy), `matters/contract-review/nda/example-mutual-nda.md` (the gate), `fixture
 `fixtures/dealroom/` (six planted risks).
 
 Where the pieces live: `.pi/workflows` (flow + UI), `.pi/agents` (personas), `.pi/extensions/orchestrator`
-(launch, journal, gates, guards, resume, state, live text), `Sources/Pi` (the shell),
-`../orchestratorai-jev` (rubrics, MCP, harness, docs mirror).
+(launch, journal, gates, guards, resume, state, live text), `Sources/Pi` (the shell), `.pi/rubrics` and
+`.pi/rubric-cases` (the guard rubrics and their labelled cases).

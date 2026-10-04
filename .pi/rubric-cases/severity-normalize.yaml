@@ -1,0 +1,20 @@
+rubric: severity-normalize
+cases:
+  - name: change of control lets the key customer walk
+    expect: [block]
+    state:
+      finding: >-
+        Northwind MSA s.11 lets Northwind (41% of recurring revenue) terminate on any change of control.
+        Obtain Northwind's written consent before closing or the deal loses its largest customer.
+  - name: inconsistent capitalisation of defined terms
+    expect: [pass]
+    state:
+      finding: >-
+        "Confidential Information" is capitalised in sections 2 and 4 but lower-case in section 7.
+        Tidy the capitalisation for consistency in the next draft.
+  - name: liability cap below the company standard
+    expect: [review]
+    state:
+      finding: >-
+        The limitation of liability caps damages at 12 months of fees, below the company's usual 24 months.
+        Push for 24 months if there is leverage; otherwise accept and note it in the contract register.

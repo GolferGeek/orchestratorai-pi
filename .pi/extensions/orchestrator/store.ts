@@ -475,7 +475,7 @@ export class RunStore {
 
   // ---------------------------------------------------------- evaluations
 
-  /** A Jev rubric result, recorded so the app can badge runs and the harness can grade history. */
+  /** A decision-rubric (jev_check) result, recorded so the app can badge runs and the harness can grade history. */
   recordEvaluation(input: {
     id: string;
     runId?: string;

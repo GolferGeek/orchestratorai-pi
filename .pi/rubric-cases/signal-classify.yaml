@@ -1,0 +1,23 @@
+rubric: signal-classify
+cases:
+  - name: enforcement action against a tracked client
+    expect: [block]
+    state:
+      portfolio: "Clients: Cedar Analytics (data broker, California), Northwind Supply. Practice areas: consumer privacy (CCPA/CPRA), M&A. Jurisdictions: California, Delaware."
+      signal: >-
+        The California Privacy Protection Agency announced an enforcement action against Cedar Analytics Inc.
+        for failing to honour opt-out requests under the CPRA, seeking penalties of $2.4 million.
+  - name: foreign maritime ruling unrelated to the portfolio
+    expect: [pass]
+    state:
+      portfolio: "Clients: Cedar Analytics (data broker, California), Northwind Supply. Practice areas: consumer privacy (CCPA/CPRA), M&A. Jurisdictions: California, Delaware."
+      signal: >-
+        The Federal Court of Australia ruled that a salvage award for a bulk carrier grounded off Queensland
+        should be reduced because the salvor's tug arrived after the vessel had refloated on the tide.
+  - name: new privacy regulation in a tracked jurisdiction
+    expect: [block, review]
+    state:
+      portfolio: "Clients: Cedar Analytics (data broker, California), Northwind Supply. Practice areas: consumer privacy (CCPA/CPRA), M&A. Jurisdictions: California, Delaware."
+      signal: >-
+        California finalised regulations requiring registered data brokers to process deletion requests
+        submitted through the state's new one-stop deletion platform within 45 days, effective August 2026.
